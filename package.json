@@ -1,0 +1,92 @@
+{
+  "name": "@roamhq/openclaw-roam",
+  "version": "0.1.0",
+  "description": "OpenClaw Roam HQ channel plugin",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "openclaw",
+    "roam",
+    "roam-hq",
+    "channel-plugin",
+    "chatbot"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WonderInventions/openclaw-roam.git"
+  },
+  "homepage": "https://github.com/WonderInventions/openclaw-roam#readme",
+  "bugs": "https://github.com/WonderInventions/openclaw-roam/issues",
+  "files": [
+    "dist",
+    "index.ts",
+    "api.ts",
+    "runtime-api.ts",
+    "setup-entry.ts",
+    "src",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./api": "./api.ts",
+    "./runtime-api": "./runtime-api.ts",
+    "./setup-entry": "./setup-entry.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.4.0"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "openclaw": "^2026.4.27",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "roam",
+      "label": "Roam",
+      "selectionLabel": "Roam HQ (plugin)",
+      "docsPath": "/channels/roam",
+      "docsLabel": "roam",
+      "blurb": "Roam HQ team messaging; install the plugin to enable.",
+      "aliases": [
+        "roam-hq"
+      ],
+      "order": 66,
+      "quickstartAllowFrom": true
+    },
+    "install": {
+      "npmSpec": "@roamhq/openclaw-roam",
+      "defaultChoice": "npm"
+    },
+    "compat": {
+      "pluginApi": ">=2026.4.0"
+    },
+    "build": {
+      "openclawVersion": "2026.4.24",
+      "pluginSdkVersion": "2026.4.24"
+    }
+  }
+}

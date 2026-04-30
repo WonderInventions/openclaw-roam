@@ -1,0 +1,111 @@
+{
+  "id": "@roamhq/openclaw-roam",
+  "channels": ["roam"],
+  "channelConfigs": {
+    "roam": {
+      "label": "Roam",
+      "description": "Roam HQ team messaging integration.",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "name": { "type": "string" },
+          "apiKey": { "type": "string", "description": "Roam bot API key (Bearer token)." },
+          "apiKeyFile": { "type": "string", "description": "Path to a file containing the API key." },
+          "apiBaseUrl": { "type": "string", "description": "Override Roam API base URL (default: https://api.ro.am)." },
+          "webhookPath": { "type": "string", "description": "Local HTTP route path (default: /roam-webhook)." },
+          "webhookUrl": { "type": "string", "description": "Public webhook URL for auto-subscription." },
+          "webhookSecret": { "type": "string", "description": "Standard-webhooks signing key (required)." },
+          "dmPolicy": { "type": "string", "enum": ["pairing", "allowlist", "open", "disabled"] },
+          "allowFrom": { "type": "array", "items": { "type": "string" } },
+          "groupPolicy": { "type": "string", "enum": ["open", "allowlist", "disabled"] },
+          "groupAllowFrom": { "type": "array", "items": { "type": "string" } },
+          "blockStreaming": { "type": "boolean" },
+          "responsePrefix": { "type": "string" },
+          "textChunkLimit": { "type": "integer", "minimum": 1 },
+          "historyLimit": { "type": "integer", "minimum": 0 },
+          "dmHistoryLimit": { "type": "integer", "minimum": 0 },
+          "streaming": {
+            "type": "object",
+            "properties": {
+              "mode": { "type": "string", "enum": ["off", "partial"] },
+              "nativeTransport": { "type": "boolean" },
+              "chunkMode": { "type": "string", "enum": ["length", "newline"] },
+              "preview": {
+                "type": "object",
+                "properties": {
+                  "chunk": {
+                    "type": "object",
+                    "properties": {
+                      "minChars": { "type": "integer" },
+                      "maxChars": { "type": "integer" },
+                      "breakPreference": { "type": "string", "enum": ["paragraph", "newline", "sentence"] }
+                    }
+                  }
+                }
+              },
+              "block": {
+                "type": "object",
+                "properties": {
+                  "enabled": { "type": "boolean" }
+                }
+              }
+            }
+          },
+          "groups": {
+            "type": "object",
+            "description": "Per-group config keyed by Roam group UUID (or '*').",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "requireMention": { "type": "boolean" },
+                "enabled": { "type": "boolean" },
+                "allowFrom": { "type": "array", "items": { "type": "string" } },
+                "systemPrompt": { "type": "string" },
+                "skills": { "type": "array", "items": { "type": "string" } },
+                "tools": {
+                  "type": "object",
+                  "properties": {
+                    "allow": { "type": "array", "items": { "type": "string" } },
+                    "deny": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          },
+          "accounts": {
+            "type": "object",
+            "description": "Per-account config keyed by account id (multi-account setups).",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "name": { "type": "string" },
+                "apiKey": { "type": "string" },
+                "apiKeyFile": { "type": "string" },
+                "apiBaseUrl": { "type": "string" },
+                "webhookPath": { "type": "string" },
+                "webhookUrl": { "type": "string" },
+                "webhookSecret": { "type": "string" },
+                "dmPolicy": { "type": "string", "enum": ["pairing", "allowlist", "open", "disabled"] },
+                "allowFrom": { "type": "array", "items": { "type": "string" } },
+                "groupPolicy": { "type": "string", "enum": ["open", "allowlist", "disabled"] },
+                "groupAllowFrom": { "type": "array", "items": { "type": "string" } },
+                "blockStreaming": { "type": "boolean" },
+                "responsePrefix": { "type": "string" },
+                "textChunkLimit": { "type": "integer", "minimum": 1 }
+              }
+            }
+          },
+          "defaultAccount": { "type": "string" }
+        }
+      }
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
