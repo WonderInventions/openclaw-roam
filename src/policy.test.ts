@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { normalizeRoamAllowlist, resolveRoamAllowlistMatch } from "./policy.js";
+import {
+  normalizeRoamAllowlist,
+  resolveRoamAllowlistMatch,
+  resolveRoamGroupSystemPrompt,
+} from "./policy.js";
 
 describe("normalizeRoamAllowlist", () => {
   it("strips roam: prefix", () => {
@@ -59,5 +63,50 @@ describe("resolveRoamAllowlistMatch", () => {
       senderId: "any",
     });
     expect(result.allowed).toBe(false);
+  });
+});
+
+describe("resolveRoamGroupSystemPrompt", () => {
+  it("returns a trimmed direct group prompt", () => {
+    expect(
+      resolveRoamGroupSystemPrompt({
+        groupConfig: { systemPrompt: "  Use concise answers.  " },
+      }),
+    ).toBe("Use concise answers.");
+  });
+
+  it("falls back to wildcard prompt", () => {
+    expect(
+      resolveRoamGroupSystemPrompt({
+        wildcardConfig: { systemPrompt: "Use the shared group persona." },
+      }),
+    ).toBe("Use the shared group persona.");
+  });
+
+  it("prefers direct prompt over wildcard prompt", () => {
+    expect(
+      resolveRoamGroupSystemPrompt({
+        groupConfig: { systemPrompt: "Use direct group instructions." },
+        wildcardConfig: { systemPrompt: "Use wildcard instructions." },
+      }),
+    ).toBe("Use direct group instructions.");
+  });
+
+  it("treats blank direct prompt as unset and uses wildcard prompt", () => {
+    expect(
+      resolveRoamGroupSystemPrompt({
+        groupConfig: { systemPrompt: "   " },
+        wildcardConfig: { systemPrompt: "Use wildcard instructions." },
+      }),
+    ).toBe("Use wildcard instructions.");
+  });
+
+  it("returns undefined when all prompts are blank or missing", () => {
+    expect(
+      resolveRoamGroupSystemPrompt({
+        groupConfig: { systemPrompt: "   " },
+        wildcardConfig: { systemPrompt: "" },
+      }),
+    ).toBeUndefined();
   });
 });

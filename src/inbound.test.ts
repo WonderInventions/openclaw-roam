@@ -23,6 +23,7 @@ const {
   mockResolveDmGroupAccessWithCommandGate,
   mockResolveAllowlistProviderRuntimeGroupPolicy,
   mockWarnMissingProviderGroupPolicyFallbackOnce,
+  mockResolveRoamGroupSystemPrompt,
 } = vi.hoisted(() => ({
   mockSendMessageRoam: vi.fn().mockResolvedValue({ chatId: "chat-1", timestamp: 1000 }),
   mockSendTypingRoam: vi.fn().mockResolvedValue(undefined),
@@ -55,6 +56,7 @@ const {
     providerMissingFallbackApplied: false,
   })),
   mockWarnMissingProviderGroupPolicyFallbackOnce: vi.fn(),
+  mockResolveRoamGroupSystemPrompt: vi.fn<() => string | undefined>(() => undefined),
 }));
 
 mockCreateRoamLiveMessageTrack.mockImplementation(() => mockLiveMessageTrack);
@@ -176,6 +178,7 @@ vi.mock("./policy.js", () => ({
     allowlistConfigured: false,
   })),
   resolveRoamGroupAllow: vi.fn(() => ({ allowed: true })),
+  resolveRoamGroupSystemPrompt: mockResolveRoamGroupSystemPrompt,
   resolveRoamRequireMention: vi.fn(() => false),
   resolveRoamMentionGate: vi.fn(() => ({ shouldSkip: false, shouldBypassMention: false })),
 }));
@@ -594,6 +597,33 @@ describe("handleRoamInbound", () => {
 
       const ctxArg = mockFinalizeInboundContext.mock.calls[0][0];
       expect(ctxArg.From).toBe("roam:user-1");
+    });
+
+    it("sets GroupSystemPrompt for group messages", async () => {
+      mockResolveRoamGroupSystemPrompt.mockReturnValueOnce("Use group-specific instructions.");
+
+      await handleRoamInbound({
+        message: makeMessage({ chatType: "group", chatId: "group-42" }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+      });
+
+      const ctxArg = mockFinalizeInboundContext.mock.calls[0][0];
+      expect(ctxArg.GroupSystemPrompt).toBe("Use group-specific instructions.");
+    });
+
+    it("does not set GroupSystemPrompt for DMs", async () => {
+      await handleRoamInbound({
+        message: makeMessage({ chatType: "direct", senderId: "user-1" }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+      });
+
+      const ctxArg = mockFinalizeInboundContext.mock.calls[0][0];
+      expect(ctxArg.GroupSystemPrompt).toBeUndefined();
+      expect(mockResolveRoamGroupSystemPrompt).not.toHaveBeenCalled();
     });
   });
 

@@ -43,6 +43,28 @@ Start the gateway:
 openclaw gateway run
 ```
 
+### Group system prompts
+
+Roam groups can add a group-specific system prompt snippet, matching the
+Discord channel behavior. The prompt is appended to the agent's normal system
+prompt for inbound group turns only.
+
+```yaml
+channels:
+  roam:
+    groupPolicy: allowlist
+    groups:
+      "*":
+        systemPrompt: "Default instructions for Roam group chats."
+      "01234567-abcd-4000-8000-000000000000":
+        requireMention: false
+        systemPrompt: "Use the engineering triage persona in this group."
+```
+
+Specific group prompts override the wildcard default. Blank prompts are treated
+as unset. `requireMention` is also supported per group and defaults to `true`
+when unset.
+
 ## Webhooks
 
 Roam delivers inbound messages via webhooks to a local HTTP route (default path:

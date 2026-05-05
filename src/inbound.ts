@@ -30,6 +30,7 @@ import {
   resolveRoamAllowlistMatch,
   resolveRoamGroupAllow,
   resolveRoamGroupMatch,
+  resolveRoamGroupSystemPrompt,
   resolveRoamMentionGate,
   resolveRoamRequireMention,
 } from "./policy.js";
@@ -353,7 +354,12 @@ export async function handleRoamInbound(params: {
     body: bodyForAgent || rawBody,
   });
 
-  const groupSystemPrompt = groupConfig?.systemPrompt?.trim() || undefined;
+  const groupSystemPrompt = isGroup
+    ? resolveRoamGroupSystemPrompt({
+        groupConfig,
+        wildcardConfig: groupMatch.wildcardConfig,
+      })
+    : undefined;
 
   // Use session key as threadKey for Roam threading (max 64 chars).
   // Roam does not support threads in DMs, so only set for groups.
