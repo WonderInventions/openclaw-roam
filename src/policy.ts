@@ -113,6 +113,17 @@ export function resolveRoamRequireMention(params: {
   return true;
 }
 
+export function resolveRoamGroupSystemPrompt(params: {
+  groupConfig?: RoamGroupConfig;
+  wildcardConfig?: RoamGroupConfig;
+}): string | undefined {
+  return (
+    params.groupConfig?.systemPrompt?.trim() ||
+    params.wildcardConfig?.systemPrompt?.trim() ||
+    undefined
+  );
+}
+
 export function resolveRoamGroupAllow(params: {
   groupPolicy: GroupPolicy;
   outerAllowFrom: Array<string | number> | undefined;
