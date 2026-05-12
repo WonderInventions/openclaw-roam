@@ -1,6 +1,6 @@
 {
   "name": "@roamhq/openclaw-roam",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "OpenClaw Roam HQ channel plugin",
   "type": "module",
   "license": "MIT",
@@ -31,14 +31,16 @@
     "README.md",
     "LICENSE"
   ],
-  "main": "./index.ts",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./index.ts",
-    "./api": "./api.ts",
-    "./runtime-api": "./runtime-api.ts",
-    "./setup-entry": "./setup-entry.ts"
+    ".": "./dist/index.js",
+    "./api": "./dist/api.js",
+    "./runtime-api": "./dist/runtime-api.js",
+    "./setup-entry": "./dist/setup-entry.js"
   },
   "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
@@ -62,7 +64,7 @@
   },
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ],
     "channel": {
       "id": "roam",
