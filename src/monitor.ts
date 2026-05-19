@@ -144,7 +144,9 @@ function webhookEventToInbound(event: RoamWebhookEvent): RoamInboundMessage {
     text: event.text,
     timestamp: timestampMs,
     chatType,
-    threadTimestamp: event.threadTimestamp ? Math.floor(event.threadTimestamp / 1000) : undefined,
+    // Keep threadTimestamp in microseconds (raw API value). Roam's chat.post
+    // and chat.history expect threadTimestamp in microseconds.
+    threadTimestamp: event.threadTimestamp ?? undefined,
   };
 
   // Extract media URLs from attached items

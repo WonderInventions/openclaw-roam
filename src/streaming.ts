@@ -79,7 +79,8 @@ export type RoamLiveMessageTrack = {
 
 export type CreateRoamLiveMessageTrackParams = {
   chatId: string;
-  threadKey?: string;
+  /** Microsecond parent-message timestamp when streaming into an existing Roam thread. */
+  threadTimestamp?: number;
   accountId: string;
   apiKey?: string;
   minInitialChars?: number;
@@ -99,7 +100,7 @@ export function createRoamLiveMessageTrack(
 
   const sendOpts = {
     accountId: params.accountId,
-    threadKey: params.threadKey,
+    threadTimestamp: params.threadTimestamp,
     apiKey: params.apiKey,
   } as const;
 

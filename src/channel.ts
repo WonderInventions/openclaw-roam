@@ -38,6 +38,12 @@ import { roamSetupAdapter } from "./setup-core.js";
 import { roamSetupWizard } from "./setup-surface.js";
 import type { CoreConfig } from "./types.js";
 
+function coerceThreadTimestamp(threadId: string | number | null | undefined): number | undefined {
+  if (threadId === null || threadId === undefined) return undefined;
+  const n = typeof threadId === "number" ? threadId : Number(threadId);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 const meta = {
   id: "roam",
   label: "Roam",
@@ -174,20 +180,22 @@ export const roamPlugin: ChannelPlugin<ResolvedRoamAccount> = {
     textChunkLimit: 8000,
     ...createAttachedChannelResultAdapter({
       channel: "roam",
-      sendText: async ({ cfg, to, text, accountId }) => {
+      sendText: async ({ cfg, to, text, accountId, threadId }) => {
         const result = await sendMessageRoam(to, text, {
           accountId: accountId ?? undefined,
           cfg: cfg as CoreConfig,
+          threadTimestamp: coerceThreadTimestamp(threadId),
         });
         return { messageId: result.chatId };
       },
-      sendMedia: async ({ cfg, to, text, mediaUrl, accountId }) => {
+      sendMedia: async ({ cfg, to, text, mediaUrl, accountId, threadId }) => {
         const result = await sendMessageRoam(
           to,
           mediaUrl ? `${text}\n\nAttachment: ${mediaUrl}` : text,
           {
             accountId: accountId ?? undefined,
             cfg: cfg as CoreConfig,
+            threadTimestamp: coerceThreadTimestamp(threadId),
           },
         );
         return { messageId: result.chatId };

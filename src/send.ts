@@ -8,7 +8,8 @@ import type { CoreConfig, RoamSendResult } from "./types.js";
 type RoamSendOpts = {
   apiKey?: string;
   accountId?: string;
-  threadKey?: string;
+  /** Microsecond parent-message timestamp; posts into the same Roam thread. */
+  threadTimestamp?: number;
   cfg?: CoreConfig;
 };
 
@@ -69,9 +70,8 @@ export async function sendMessageRoam(
     markdown: true,
     sync: true,
   };
-  if (opts.threadKey) {
-    // Roam threadKey max 64 chars; truncate if needed
-    body.threadKey = opts.threadKey.slice(0, 64);
+  if (opts.threadTimestamp !== undefined) {
+    body.threadTimestamp = opts.threadTimestamp;
   }
 
   const apiBase = resolveApiBase(cfg, account.config.apiBaseUrl);
@@ -82,7 +82,7 @@ export async function sendMessageRoam(
   });
   const startedAt = Date.now();
   logger.info(
-    `[roam-send] chat.post req chat=${chatId} bytes=${Buffer.byteLength(message, "utf8")} thread=${opts.threadKey ? "yes" : "no"}`,
+    `[roam-send] chat.post req chat=${chatId} bytes=${Buffer.byteLength(message, "utf8")} thread=${opts.threadTimestamp ?? "no"}`,
   );
 
   const { response, release } = await fetchWithSsrFGuard({
@@ -187,8 +187,8 @@ export async function updateMessageRoam(
     markdown: true,
     sync: true,
   };
-  if (opts.threadKey) {
-    body.threadKey = opts.threadKey.slice(0, 64);
+  if (opts.threadTimestamp !== undefined) {
+    body.threadTimestamp = opts.threadTimestamp;
   }
 
   const apiBase = resolveApiBase(cfg, account.config.apiBaseUrl);
@@ -199,7 +199,7 @@ export async function updateMessageRoam(
   });
   const startedAt = Date.now();
   logger.info(
-    `[roam-send] chat.update req chat=${chatId} ts=${timestamp} bytes=${Buffer.byteLength(message, "utf8")} thread=${opts.threadKey ? "yes" : "no"}`,
+    `[roam-send] chat.update req chat=${chatId} ts=${timestamp} bytes=${Buffer.byteLength(message, "utf8")} thread=${opts.threadTimestamp ?? "no"}`,
   );
 
   const { response, release } = await fetchWithSsrFGuard({
@@ -277,11 +277,16 @@ export async function updateMessageRoam(
 /** Send a typing indicator to a Roam chat. Best-effort; failures are swallowed. */
 export async function sendTypingRoam(
   chatId: string,
-  opts: Omit<RoamSendOpts, "threadKey"> = {},
+  opts: RoamSendOpts = {},
 ): Promise<void> {
   const { cfg, account, apiKey } = resolveRoamSendContext(opts);
   const normalizedChatId = normalizeChatId(chatId);
   const apiBase = resolveApiBase(cfg, account.config.apiBaseUrl);
+
+  const body: Record<string, unknown> = { chatId: normalizedChatId };
+  if (opts.threadTimestamp !== undefined) {
+    body.threadTimestamp = opts.threadTimestamp;
+  }
 
   await fetchWithSsrFGuard({
     url: `${apiBase}/chat.typing`,
@@ -291,7 +296,7 @@ export async function sendTypingRoam(
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ chatId: normalizedChatId }),
+      body: JSON.stringify(body),
     },
     auditContext: "roam-chat-typing",
   })

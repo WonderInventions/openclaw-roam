@@ -25,6 +25,7 @@ import {
 } from "../runtime-api.js";
 import type { ResolvedRoamAccount } from "./accounts.js";
 import { createRoamAnswerStreamTrack, createRoamThinkingStreamTrack } from "./chat-stream.js";
+import { fetchRoamChatHistory } from "./history.js";
 import {
   normalizeRoamAllowlist,
   resolveRoamAllowlistMatch,
@@ -96,10 +97,10 @@ async function deliverRoamReply(params: {
   payload: OutboundReplyPayload;
   chatId: string;
   accountId: string;
-  threadKey?: string;
+  threadTimestamp?: number;
   statusSink?: (patch: { lastOutboundAt?: number }) => void;
 }): Promise<void> {
-  const { payload, chatId, accountId, threadKey, statusSink } = params;
+  const { payload, chatId, accountId, threadTimestamp, statusSink } = params;
   await deliverFormattedTextWithAttachments({
     payload,
     send: async ({ text }) => {
@@ -111,7 +112,7 @@ async function deliverRoamReply(params: {
         if (!chunk) {
           continue;
         }
-        await sendMessageRoam(chatId, chunk, { accountId, threadKey });
+        await sendMessageRoam(chatId, chunk, { accountId, threadTimestamp });
         statusSink?.({ lastOutboundAt: Date.now() });
       }
     },
@@ -142,8 +143,12 @@ export async function handleRoamInbound(params: {
   // dispatch returns. Roam's typing TTL is ~3s; 2s pulses keep continuous
   // overlap even when the agent runtime briefly blocks the event loop.
   const chatId = message.chatId;
+  const typingThreadTimestamp = message.threadTimestamp;
   const fireTypingPulse = () => {
-    sendTypingRoam(chatId, { accountId: account.accountId }).catch((err) => {
+    sendTypingRoam(chatId, {
+      accountId: account.accountId,
+      threadTimestamp: typingThreadTimestamp,
+    }).catch((err) => {
       logTypingFailure({
         log: (msg) => runtime.log?.(msg),
         channel: CHANNEL_ID,
@@ -366,9 +371,41 @@ export async function handleRoamInbound(params: {
       })
     : undefined;
 
-  // Use session key as threadKey for Roam threading (max 64 chars).
-  // Roam does not support threads in DMs, so only set for groups.
-  const threadKey = isGroup ? route.sessionKey?.slice(0, 64) : undefined;
+  // Reply in the same Roam-native thread as the inbound message, if any. The
+  // webhook delivers the parent message's microsecond timestamp on threaded
+  // messages; pass it back to chat.post as threadTimestamp.
+  const threadTimestamp = isGroup ? message.threadTimestamp : undefined;
+
+  // When the inbound is in a thread, pre-fetch the thread's replies so the
+  // agent sees the conversation context it's responding to without having to
+  // ask. Bounded by historyLimit (default 20, server max 200).
+  const historyLimit = account.config.historyLimit ?? 20;
+  const threadHistory =
+    isGroup && threadTimestamp !== undefined && historyLimit > 0
+      ? await fetchRoamChatHistory({
+          cfg: config,
+          accountId: account.accountId,
+          apiKey: account.apiKey,
+          apiBaseUrl: account.config.apiBaseUrl,
+          chatId,
+          threadTimestamp,
+          limit: historyLimit,
+        }).catch((err) => {
+          runtime.error?.(`roam: chat.history failed for thread ${threadTimestamp}: ${String(err)}`);
+          return [];
+        })
+      : [];
+  // Filter out the inbound itself (already delivered to the agent as Body) so
+  // we don't double-include it. Sort ascending so the model sees chronological
+  // order.
+  const inboundHistory = threadHistory
+    .filter((entry) => entry.timestamp !== message.timestamp * 1000)
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((entry) => ({
+      sender: entry.sender,
+      body: entry.text ?? "",
+      timestamp: Math.floor(entry.timestamp / 1000),
+    }));
 
   // Download media attachments to local files so the media understanding pipeline can process them.
   let mediaPaths: string[] | undefined;
@@ -388,6 +425,10 @@ export async function handleRoamInbound(params: {
     BodyForAgent: bodyForAgent || rawBody,
     RawBody: rawBody,
     CommandBody: rawBody,
+    InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
+    // Carry the Roam-native thread parent timestamp forward so outbound replies
+    // land in the same thread. The host surfaces this as ChannelOutboundContext.threadId.
+    MessageThreadId: threadTimestamp,
     From: isGroup ? `roam:group:${chatId}` : `roam:${senderId}`,
     To: `roam:${chatId}`,
     SessionKey: route.sessionKey,
@@ -421,8 +462,8 @@ export async function handleRoamInbound(params: {
   const onActivity = () => statusSink?.({ lastOutboundAt: Date.now() });
   // Thinking uses the native stream lifecycle with kind="thinking" so Roam
   // renders it as a collapsed thought-bubble (ThinkingContent) rather than a
-  // normal chat message. The stream lifecycle does not support threadKey, so
-  // thinking content is posted at the top level of the chat.
+  // normal chat message. The stream lifecycle does not currently support
+  // threading, so thinking content is posted at the top level of the chat.
   const thinkingTrack = useStreaming
     ? createRoamThinkingStreamTrack({
         chatId,
@@ -445,7 +486,7 @@ export async function handleRoamInbound(params: {
         })
       : createRoamLiveMessageTrack({
           chatId,
-          threadKey,
+          threadTimestamp,
           accountId: account.accountId,
           apiKey: account.apiKey,
           onError: (msg) => runtime.error?.(`roam-stream[answer]: ${msg}`),
@@ -491,7 +532,7 @@ export async function handleRoamInbound(params: {
         payload: payloadToSend,
         chatId,
         accountId: account.accountId,
-        threadKey,
+        threadTimestamp,
         statusSink,
       });
       return;
@@ -502,7 +543,7 @@ export async function handleRoamInbound(params: {
       payload,
       chatId,
       accountId: account.accountId,
-      threadKey,
+      threadTimestamp,
       statusSink,
     });
   };

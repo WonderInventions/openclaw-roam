@@ -162,6 +162,7 @@ export type RoamInboundMessage = {
   text: string;
   timestamp: number;
   chatType: "direct" | "group";
+  /** Microsecond-precision parent-message timestamp when the inbound is in a Roam thread. */
   threadTimestamp?: number;
   /** URLs of attached media (images, files). */
   mediaUrls?: string[];
@@ -179,6 +180,7 @@ export type RoamSendResult = {
 export type RoamSendOptions = {
   apiKey?: string;
   accountId?: string;
-  threadKey?: string;
+  /** Microsecond timestamp of the parent message when posting into an existing Roam thread. */
+  threadTimestamp?: number;
   cfg?: CoreConfig;
 };

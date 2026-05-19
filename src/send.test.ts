@@ -80,19 +80,18 @@ describe("sendMessageRoam", () => {
     expect(body.sync).toBe(true);
   });
 
-  it("includes threadKey when provided", async () => {
-    await sendMessageRoam("chat-1", "hello", { threadKey: "thread-abc" });
+  it("includes threadTimestamp when provided", async () => {
+    await sendMessageRoam("chat-1", "hello", { threadTimestamp: 1765602474760032 });
 
     const body = JSON.parse(mockFetchInner.mock.calls[0][1].body);
-    expect(body.threadKey).toBe("thread-abc");
+    expect(body.threadTimestamp).toBe(1765602474760032);
   });
 
-  it("truncates threadKey to 64 chars", async () => {
-    const longKey = "a".repeat(100);
-    await sendMessageRoam("chat-1", "hello", { threadKey: longKey });
+  it("omits threadTimestamp when not provided", async () => {
+    await sendMessageRoam("chat-1", "hello");
 
     const body = JSON.parse(mockFetchInner.mock.calls[0][1].body);
-    expect(body.threadKey).toHaveLength(64);
+    expect(body.threadTimestamp).toBeUndefined();
   });
 
   it("strips roam: target prefix from chatId", async () => {
