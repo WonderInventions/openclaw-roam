@@ -155,6 +155,11 @@ export async function handleRoamInbound(params: {
   fireTypingPulse();
   const typingInterval = setInterval(fireTypingPulse, 2000);
 
+  // Guarantee the typing interval is cleared on every return path — including
+  // the many early-return drops below (allowlist/policy/mention/etc.). Without
+  // this, dropped messages leak a 2s interval that runs until the process
+  // restarts; multiple drops compound into a runaway chat.typing storm.
+  try {
   const pairing = createChannelPairingController({
     core,
     channel: CHANNEL_ID,
@@ -568,5 +573,8 @@ export async function handleRoamInbound(params: {
     if (answerTrack) {
       await answerTrack.finalize();
     }
+  }
+  } finally {
+    clearInterval(typingInterval);
   }
 }
