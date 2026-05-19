@@ -27,6 +27,7 @@ import {
   type ResolvedRoamAccount,
 } from "./accounts.js";
 import { RoamConfigSchema } from "./config-schema.js";
+import { exportRoamApiKeyToEnv } from "./env-export.js";
 import { monitorRoamProvider } from "./monitor.js";
 import { looksLikeRoamTargetId, normalizeRoamMessagingTarget } from "./normalize.js";
 import { resolveRoamGroupToolPolicy } from "./policy.js";
@@ -239,6 +240,17 @@ export const roamPlugin: ChannelPlugin<ResolvedRoamAccount> = {
       }
 
       ctx.log?.info(`[${account.accountId}] starting Roam webhook monitor`);
+
+      const restoreEnv = exportRoamApiKeyToEnv({
+        cfg: ctx.cfg as CoreConfig,
+        accountId: account.accountId,
+        log: ctx.log,
+      });
+      if (ctx.abortSignal.aborted) {
+        restoreEnv();
+      } else {
+        ctx.abortSignal.addEventListener("abort", restoreEnv, { once: true });
+      }
 
       const statusSink = createAccountStatusSink({
         accountId: ctx.accountId,

@@ -69,6 +69,25 @@ function resolveRoamApiKey(
     return { apiKey: envKey, source: "env" };
   }
 
+  const configResolved = resolveRoamApiKeyFromConfig(cfg, opts);
+  if (configResolved.source !== "none") {
+    return configResolved;
+  }
+
+  return { apiKey: "", source: "none" };
+}
+
+/**
+ * Resolve the Roam API key from config alone (apiKeyFile then inline apiKey),
+ * skipping the ROAM_API_KEY environment variable. Used by env-export so that an
+ * explicitly configured key takes precedence over a pre-existing env value.
+ */
+export function resolveRoamApiKeyFromConfig(
+  cfg: CoreConfig,
+  opts: { accountId?: string },
+): { apiKey: string; source: "secretFile" | "config" | "none" } {
+  const merged = mergeRoamAccountConfig(cfg, opts.accountId ?? DEFAULT_ACCOUNT_ID);
+
   if (merged.apiKeyFile) {
     const fileKey = tryReadSecretFileSync(merged.apiKeyFile, "Roam API key file", {
       rejectSymlink: true,
