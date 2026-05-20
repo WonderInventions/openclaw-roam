@@ -337,8 +337,8 @@ publishing to the `master` branch and `v*` tags.
 3. On GitHub: **Releases → Draft a new release**, choose the tag you just
    pushed, write release notes, and click **Publish release**.
 4. Watch the `release` workflow in **Actions**. It re-runs typecheck and
-   tests, verifies that the git tag matches `package.json` version, and
-   publishes with `npm publish --provenance --access public`.
+   tests, verifies that the git tag matches `package.json` version, builds
+   the package, and publishes with `npm publish --provenance --access public`.
 5. After the run succeeds, verify on
    [npmjs.com/package/@roamhq/openclaw-roam](https://www.npmjs.com/package/@roamhq/openclaw-roam)
    that the new version shows the green provenance badge linking back to

@@ -31,7 +31,7 @@ jobs:
           cache: npm
 
       - name: Upgrade npm (trusted publishing requires >= 11.5.1)
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - run: npm ci
 
@@ -45,6 +45,7 @@ jobs:
 
       - run: npm run typecheck
       - run: npm test
+      - run: npm run build
 
       - name: Publish to npm
         run: npm publish --provenance --access public
