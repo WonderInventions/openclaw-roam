@@ -38,6 +38,11 @@
     "./runtime-api": "./dist/runtime-api.js",
     "./setup-entry": "./dist/setup-entry.js"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org"
+  },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "prepublishOnly": "npm run build",

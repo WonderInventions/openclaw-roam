@@ -317,22 +317,62 @@ Promote the helpers in `src/_local-shim.ts` to public SDK subpaths so
 third-party plugins do not have to inline them. Concrete proposal table
 above.
 
-## First publish checklist
+## Releasing
 
-1. Confirm `version` in `package.json` (currently `0.1.0`).
-2. `npm install`.
-3. `npm run typecheck` — silent.
-4. `npm test` — 130 passing tests.
-5. `npm pack --dry-run` and inspect the file list: must include the four root
-   barrels (`index.ts`, `api.ts`, `runtime-api.ts`, `setup-entry.ts`), the
-   `src/` directory, `openclaw.plugin.json`, `LICENSE`, and `README.md`. The
-   tarball name will be `roamhq-openclaw-roam-0.1.0.tgz`.
-6. `npm login` as a member of the `roamhq` npm org (one-time).
-7. `npm publish --access public` — `--access public` is required for scoped
-   packages or npm defaults to private.
-8. Verify install from a fresh OpenClaw checkout:
-   `openclaw plugin install @roamhq/openclaw-roam`.
-9. Tag the release: `git tag v0.1.0 && git push --tags`.
+Releases are published from CI via GitHub Actions using npm
+[trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) with
+[provenance](https://docs.npmjs.com/generating-provenance-statements) — no
+npm tokens are stored anywhere. The workflow runs on the `release: published`
+event, gated by the `npm-publish` GitHub Environment, which restricts
+publishing to the `master` branch and `v*` tags.
+
+### Cutting a release
+
+1. Ensure `master` is green and your checkout is up to date.
+2. Bump the version and tag locally:
+   ```bash
+   npm version <patch|minor|major>
+   git push origin master --follow-tags
+   ```
+3. On GitHub: **Releases → Draft a new release**, choose the tag you just
+   pushed, write release notes, and click **Publish release**.
+4. Watch the `release` workflow in **Actions**. It re-runs typecheck and
+   tests, verifies that the git tag matches `package.json` version, builds
+   the package, and publishes with `npm publish --provenance --access public`.
+5. After the run succeeds, verify on
+   [npmjs.com/package/@roamhq/openclaw-roam](https://www.npmjs.com/package/@roamhq/openclaw-roam)
+   that the new version shows the green provenance badge linking back to
+   this repo, the `release.yml` workflow, and the build commit SHA.
+
+### What CI does and does not do
+
+CI publishes. CI does **not** bump versions, generate changelogs, or push
+tags — those are local maintainer steps. The `release` workflow publishes
+exactly what's in the tagged commit on `master`.
+
+### Rolling back
+
+npm publishes are immutable. Use `npm deprecate` to discourage installs of
+a bad version:
+
+```bash
+npm deprecate '@roamhq/openclaw-roam@<version>' "<reason>"
+```
+
+`npm unpublish` is blocked 72 hours after publish, so deprecate-and-release
+is the normal recovery path.
+
+### Troubleshooting
+
+- **Tag/version mismatch.** The verify step fails the run before publish if
+  the git tag (e.g. `v0.2.0`) doesn't match the `version` in `package.json`.
+  Fix the mismatch, delete the tag, retag, and re-publish the GitHub Release.
+- **`ENEEDAUTH` or auth-shaped error during publish.** The npm trusted
+  publisher entry is missing or doesn't match the workflow filename /
+  environment name. Re-check the package's Trusted Publishers settings.
+- **npm CLI too old.** The workflow installs `npm@11` to satisfy the
+  `>= 11.5.1` requirement for trusted publishing. If a runner image change
+  ever breaks this, pin to a known-good `npm@11`.
 
 ## License
 
