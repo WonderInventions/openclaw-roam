@@ -188,6 +188,7 @@ vi.mock("./policy.js", () => ({
   resolveRoamGroupAllow: vi.fn(() => ({ allowed: true })),
   resolveRoamGroupSystemPrompt: mockResolveRoamGroupSystemPrompt,
   resolveRoamRequireMention: vi.fn(() => false),
+  resolveRoamReplyInThread: vi.fn(() => false),
   resolveRoamMentionGate: vi.fn(() => ({ shouldSkip: false, shouldBypassMention: false })),
 }));
 
