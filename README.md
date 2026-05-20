@@ -370,7 +370,7 @@ is the normal recovery path.
 - **`ENEEDAUTH` or auth-shaped error during publish.** The npm trusted
   publisher entry is missing or doesn't match the workflow filename /
   environment name. Re-check the package's Trusted Publishers settings.
-- **npm CLI too old.** The workflow installs `npm@latest` to satisfy the
+- **npm CLI too old.** The workflow installs `npm@11` to satisfy the
   `>= 11.5.1` requirement for trusted publishing. If a runner image change
   ever breaks this, pin to a known-good `npm@11`.
 
