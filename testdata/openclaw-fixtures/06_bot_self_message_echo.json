@@ -1,0 +1,24 @@
+{
+  "name": "bot_self_message_echo",
+  "summary": "The bot sends a message itself (e.g. a follow-up post). Roam still delivers the chat.message webhook to the bot's subscription (sender is recorded in userId); the plugin must filter on `userId == bot.addrId` and skip it — expectedApiCalls is empty.",
+
+  "setup": {
+    "actor": "bot",
+    "chatType": "dm",
+    "trigger": { "text": "bot-initiated note" }
+  },
+
+  "webhook": {
+    "body": {
+      "type": "message",
+      "contentType": "text",
+      "userId": "<bot.addrId>",
+      "chatId": "<chat.id>",
+      "chatType": "dm",
+      "text": "<assertText:contains:bot-initiated note>",
+      "timestamp": "<gen.now>"
+    }
+  },
+
+  "expectedApiCalls": []
+}

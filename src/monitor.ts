@@ -131,7 +131,7 @@ function parseRoamWebhookEvent(raw: unknown): RoamWebhookEvent | null {
   return obj as unknown as RoamWebhookEvent;
 }
 
-function webhookEventToInbound(event: RoamWebhookEvent): RoamInboundMessage {
+export function webhookEventToInbound(event: RoamWebhookEvent): RoamInboundMessage {
   // Roam timestamps are microsecond-precision; convert to milliseconds for downstream use.
   const timestampMs = Math.floor(event.timestamp / 1000);
   // Derive chat type from the event's chatType field ("dm" → "direct", "channel"/"group" → "group").

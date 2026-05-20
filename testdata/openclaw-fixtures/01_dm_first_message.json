@@ -1,0 +1,42 @@
+{
+  "name": "dm_first_message",
+  "summary": "Alice DMs the bot for the first time. Roam creates the DM chat as a side effect and emits a chat.message webhook. Plugin replies at top level.",
+
+  "setup": {
+    "actor": "alice",
+    "chatType": "dm",
+    "trigger": { "text": "hello bot" }
+  },
+
+  "webhook": {
+    "body": {
+      "type": "message",
+      "contentType": "text",
+      "userId": "<alice.addrId>",
+      "chatId": "<chat.id>",
+      "chatType": "dm",
+      "text": "<assertText:contains:hello bot>",
+      "timestamp": "<gen.now>"
+    }
+  },
+
+  "expectedApiCalls": [
+    {
+      "name": "typing in DM",
+      "method": "POST",
+      "path": "/v1/chat.typing",
+      "body": { "chatId": "<chat.id>" }
+    },
+    {
+      "name": "reply at top level",
+      "method": "POST",
+      "path": "/v1/chat.post",
+      "body": {
+        "chatId": "<chat.id>",
+        "text": "<assertText:nonEmpty>",
+        "markdown": true,
+        "sync": true
+      }
+    }
+  ]
+}
