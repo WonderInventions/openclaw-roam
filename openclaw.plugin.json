@@ -63,6 +63,7 @@
                 "enabled": { "type": "boolean" },
                 "allowFrom": { "type": "array", "items": { "type": "string" } },
                 "systemPrompt": { "type": "string" },
+                "replyInThread": { "type": "boolean" },
                 "skills": { "type": "array", "items": { "type": "string" } },
                 "tools": {
                   "type": "object",

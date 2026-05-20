@@ -33,6 +33,7 @@ import {
   resolveRoamGroupMatch,
   resolveRoamGroupSystemPrompt,
   resolveRoamMentionGate,
+  resolveRoamReplyInThread,
   resolveRoamRequireMention,
 } from "./policy.js";
 import { getRoamRuntime } from "./runtime.js";
@@ -133,7 +134,7 @@ export async function handleRoamInbound(params: {
 
   // Drop messages sent by the bot itself to prevent infinite loops.
   if (botId && message.senderId === botId) {
-    runtime.log?.(`roam: drop self-message from bot ${botId}`);
+    runtime.log?.(`roam[${account.accountId}]: drop self-message from bot ${botId}`);
     return;
   }
 
@@ -208,11 +209,11 @@ export async function handleRoamInbound(params: {
   });
   const groupConfig = groupMatch.groupConfig;
   if (isGroup && !groupMatch.allowed) {
-    runtime.log?.(`roam: drop chat ${chatId} (not allowlisted)`);
+    runtime.log?.(`roam[${account.accountId}]: drop chat ${chatId} (not allowlisted)`);
     return;
   }
   if (groupConfig?.enabled === false) {
-    runtime.log?.(`roam: drop chat ${chatId} (disabled)`);
+    runtime.log?.(`roam[${account.accountId}]: drop chat ${chatId} (disabled)`);
     return;
   }
 
@@ -244,7 +245,7 @@ export async function handleRoamInbound(params: {
 
   if (isGroup) {
     if (access.decision !== "allow") {
-      runtime.log?.(`roam: drop group sender ${senderId} (reason=${access.reason})`);
+      runtime.log?.(`roam[${account.accountId}]: drop group sender ${senderId} (reason=${access.reason})`);
       return;
     }
     const groupAllow = resolveRoamGroupAllow({
@@ -254,31 +255,31 @@ export async function handleRoamInbound(params: {
       senderId,
     });
     if (!groupAllow.allowed) {
-      runtime.log?.(`roam: drop group sender ${senderId} (policy=${groupPolicy})`);
+      runtime.log?.(`roam[${account.accountId}]: drop group sender ${senderId} (policy=${groupPolicy})`);
       return;
     }
   } else {
     if (access.decision !== "allow") {
       runtime.log?.(
-        `roam: DM access decision=${access.decision} reason=${access.reason} sender=${senderId}`,
+        `roam[${account.accountId}]: DM access decision=${access.decision} reason=${access.reason} sender=${senderId}`,
       );
       if (access.decision === "pairing") {
-        runtime.log?.(`roam: issuing pairing challenge to ${senderId} in chat ${chatId}`);
+        runtime.log?.(`roam[${account.accountId}]: issuing pairing challenge to ${senderId} in chat ${chatId}`);
         await pairing.issueChallenge({
           senderId,
           senderIdLine: `Your Roam user id: ${senderId}`,
           meta: { name: senderName || undefined },
           sendPairingReply: async (text) => {
-            runtime.log?.(`roam: sending pairing reply to ${chatId}`);
+            runtime.log?.(`roam[${account.accountId}]: sending pairing reply to ${chatId}`);
             await sendMessageRoam(chatId, text, { accountId: account.accountId });
             statusSink?.({ lastOutboundAt: Date.now() });
           },
           onReplyError: (err) => {
-            runtime.error?.(`roam: pairing reply failed for ${senderId}: ${String(err)}`);
+            runtime.error?.(`roam[${account.accountId}]: pairing reply failed for ${senderId}: ${String(err)}`);
           },
         });
       }
-      runtime.log?.(`roam: drop DM sender ${senderId} (reason=${access.reason})`);
+      runtime.log?.(`roam[${account.accountId}]: drop DM sender ${senderId} (reason=${access.reason})`);
       return;
     }
   }
@@ -298,7 +299,7 @@ export async function handleRoamInbound(params: {
 
   // If the message was only a bot mention with no actual content (and no media), drop it.
   if (!bodyForAgent && !hasControlCommand && !hasMedia) {
-    runtime.log?.(`roam: drop mention-only message from ${senderId}`);
+    runtime.log?.(`roam[${account.accountId}]: drop mention-only message from ${senderId}`);
     return;
   }
 
@@ -323,7 +324,7 @@ export async function handleRoamInbound(params: {
     commandAuthorized,
   });
   if (isGroup && mentionGate.shouldSkip) {
-    runtime.log?.(`roam: drop chat ${chatId} (no mention)`);
+    runtime.log?.(`roam[${account.accountId}]: drop chat ${chatId} (no mention)`);
     return;
   }
 
@@ -369,10 +370,26 @@ export async function handleRoamInbound(params: {
       })
     : undefined;
 
-  // Reply in the same Roam-native thread as the inbound message, if any. The
-  // webhook delivers the parent message's microsecond timestamp on threaded
-  // messages; pass it back to chat.post as threadTimestamp.
-  const threadTimestamp = isGroup ? message.threadTimestamp : undefined;
+  // Decide where the bot's reply lands in the chat:
+  //   1. Inbound already in a thread → reply in that same thread (use parent ts).
+  //   2. Top-level inbound + group is configured `replyInThread: true` → start
+  //      a new thread under the inbound message (use inbound timestamp as parent).
+  //   3. Otherwise → reply at top level.
+  // Roam expects threadTimestamp in microseconds; message.timestamp is in ms
+  // (converted at webhook ingestion), so multiply by 1000 for case (2).
+  const replyInThread = isGroup
+    ? resolveRoamReplyInThread({
+        groupConfig,
+        wildcardConfig: groupMatch.wildcardConfig,
+      })
+    : false;
+  const threadTimestamp = !isGroup
+    ? undefined
+    : message.threadTimestamp !== undefined
+      ? message.threadTimestamp
+      : replyInThread
+        ? message.timestamp * 1000
+        : undefined;
 
   // Pre-fetch chat history for groups so the agent sees context it would
   // otherwise have missed: in `requireMention: true` groups the plugin drops
@@ -395,7 +412,7 @@ export async function handleRoamInbound(params: {
       limit: historyLimit,
     }).catch((err) => {
       runtime.error?.(
-        `roam: chat.history failed for chat ${chatId} thread=${threadTimestamp ?? "-"}: ${String(err)}`,
+        `roam[${account.accountId}]: chat.history failed for chat ${chatId} thread=${threadTimestamp ?? "-"}: ${String(err)}`,
       );
       return [];
     });
@@ -569,10 +586,10 @@ export async function handleRoamInbound(params: {
       core,
       deliver,
       onRecordError: (err: unknown) => {
-        runtime.error?.(`roam: failed updating session meta: ${String(err)}`);
+        runtime.error?.(`roam[${account.accountId}]: failed updating session meta: ${String(err)}`);
       },
       onDispatchError: (err: unknown, info: { kind: string }) => {
-        runtime.error?.(`roam ${info.kind} reply failed: ${String(err)}`);
+        runtime.error?.(`roam[${account.accountId}] ${info.kind} reply failed: ${String(err)}`);
       },
       replyOptions: {
         skillFilter: groupConfig?.skills,

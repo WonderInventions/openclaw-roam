@@ -372,16 +372,20 @@ async function fetchRoamBotIdentity(
       if (!response.ok) {
         return null;
       }
+      // PATs (rmp-) return both `user` (the person) and `bot` (the bot persona).
+      // Org tokens (rmk-) return only `user` (the token IS the bot identity).
       const data = (await response.json()) as {
+        user?: { id?: string; name?: string; imageUrl?: string };
         bot?: { id?: string; name?: string; imageUrl?: string };
       };
-      if (!data.bot?.id || !data.bot?.name) {
+      const persona = data.bot?.id ? data.bot : data.user;
+      if (!persona?.id || !persona?.name) {
         return null;
       }
       return {
-        id: data.bot.id,
-        name: data.bot.name,
-        imageUrl: data.bot.imageUrl || undefined,
+        id: persona.id,
+        name: persona.name,
+        imageUrl: persona.imageUrl || undefined,
       };
     } finally {
       await release();
