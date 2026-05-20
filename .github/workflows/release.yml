@@ -26,12 +26,14 @@ jobs:
 
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: "22"
+          # Node 24 ships with npm 11.5+, which is required for OIDC trusted
+          # publishing (`npm publish --provenance` over the GitHub identity).
+          # CI tests against Node 22 (the floor declared in package.json's
+          # engines.node); the release box runs on 24 so we don't have to
+          # upgrade npm in place — that path is broken on the runner.
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
           cache: npm
-
-      - name: Upgrade npm (trusted publishing requires >= 11.5.1)
-        run: npm install -g npm@11
 
       - run: npm ci
 
