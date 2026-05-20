@@ -1,0 +1,58 @@
+{
+  "name": "group_mention_threaded",
+  "summary": "Alice @-mentions the bot in an existing thread. Plugin replies inside the thread (typing, history, and post all carry threadTimestamp).",
+
+  "setup": {
+    "actor": "alice",
+    "chatType": "group",
+    "groupName": "OC mention thread",
+    "botIsMember": true,
+    "thread": { "parentActor": "alice", "parentText": "Let's brainstorm scope for Q3" },
+    "trigger": { "text": "<@<bot.addrId>> what do you think?", "inThread": true }
+  },
+
+  "webhook": {
+    "body": {
+      "type": "message",
+      "contentType": "text",
+      "userId": "<alice.addrId>",
+      "chatId": "<chat.id>",
+      "chatType": "group",
+      "text": "<assertText:contains:what do you think?>",
+      "timestamp": "<gen.now>",
+      "threadTimestamp": "<thread.parentTs>"
+    }
+  },
+
+  "expectedApiCalls": [
+    {
+      "name": "typing in thread",
+      "method": "POST",
+      "path": "/v1/chat.typing",
+      "body": { "chatId": "<chat.id>", "threadTimestamp": "<thread.parentTs>" }
+    },
+    {
+      "name": "fetch thread history",
+      "method": "GET",
+      "path": "/v1/chat.history",
+      "query": {
+        "chatId": "<chat.id>",
+        "threadTimestamp": "<thread.parentTs>",
+        "limit": "20"
+      }
+    },
+    {
+      "name": "post reply in thread",
+      "method": "POST",
+      "path": "/v1/chat.post",
+      "body": {
+        "chatId": "<chat.id>",
+        "text": "<assertText:nonEmpty>",
+        "markdown": true,
+        "sync": true,
+        "threadTimestamp": "<thread.parentTs>"
+      },
+      "verifyOnThread": true
+    }
+  ]
+}

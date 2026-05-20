@@ -1,0 +1,26 @@
+{
+  "name": "group_no_mention",
+  "summary": "Alice posts in a group without mentioning the bot. The bot is a member so Roam delivers the chat.message webhook, but the plugin should make no API calls.",
+
+  "setup": {
+    "actor": "alice",
+    "chatType": "group",
+    "groupName": "OC no mention",
+    "botIsMember": true,
+    "trigger": { "text": "stand-up notes" }
+  },
+
+  "webhook": {
+    "body": {
+      "type": "message",
+      "contentType": "text",
+      "userId": "<alice.addrId>",
+      "chatId": "<chat.id>",
+      "chatType": "group",
+      "text": "<assertText:contains:stand-up notes>",
+      "timestamp": "<gen.now>"
+    }
+  },
+
+  "expectedApiCalls": []
+}

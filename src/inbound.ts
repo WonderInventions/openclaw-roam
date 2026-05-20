@@ -25,7 +25,7 @@ import {
 } from "../runtime-api.js";
 import type { ResolvedRoamAccount } from "./accounts.js";
 import { createRoamAnswerStreamTrack, createRoamThinkingStreamTrack } from "./chat-stream.js";
-import { fetchRoamChatHistory } from "./history.js";
+import { fetchRoamChatHistory, type RoamHistoryMessage } from "./history.js";
 import {
   normalizeRoamAllowlist,
   resolveRoamAllowlistMatch,
@@ -137,11 +137,6 @@ export async function handleRoamInbound(params: {
     return;
   }
 
-  // Fire the typing indicator IMMEDIATELY — before any further work — so the
-  // user sees feedback within milliseconds of the webhook arrival, not after
-  // pairing/policy/dispatch setup. The interval keeps it visible until the
-  // dispatch returns. Roam's typing TTL is ~3s; 2s pulses keep continuous
-  // overlap even when the agent runtime briefly blocks the event loop.
   const chatId = message.chatId;
   const typingThreadTimestamp = message.threadTimestamp;
   const fireTypingPulse = () => {
@@ -157,13 +152,10 @@ export async function handleRoamInbound(params: {
       });
     });
   };
-  fireTypingPulse();
-  const typingInterval = setInterval(fireTypingPulse, 2000);
-
-  // Guarantee the typing interval is cleared on every return path — including
-  // the many early-return drops below (allowlist/policy/mention/etc.). Without
-  // this, dropped messages leak a 2s interval that runs until the process
-  // restarts; multiple drops compound into a runaway chat.typing storm.
+  // Typing pulse is started AFTER all drop checks pass (see "begin typing
+  // pulse" below). Dropped messages must not leave a chat.typing trace; the
+  // shared contract fixtures assert zero API calls on the drop paths.
+  let typingInterval: ReturnType<typeof setInterval> | undefined;
   try {
   const pairing = createChannelPairingController({
     core,
@@ -335,6 +327,12 @@ export async function handleRoamInbound(params: {
     return;
   }
 
+  // Begin typing pulse: past every drop check, we will dispatch. The pulse
+  // covers the slow tail (history fetch, media download, agent dispatch).
+  // Roam's typing TTL is ~3s; 2s pulses keep continuous overlap.
+  fireTypingPulse();
+  typingInterval = setInterval(fireTypingPulse, 2000);
+
   const route = core.channel.routing.resolveAgentRoute({
     cfg: config as OpenClawConfig,
     channel: CHANNEL_ID,
@@ -376,25 +374,32 @@ export async function handleRoamInbound(params: {
   // messages; pass it back to chat.post as threadTimestamp.
   const threadTimestamp = isGroup ? message.threadTimestamp : undefined;
 
-  // When the inbound is in a thread, pre-fetch the thread's replies so the
-  // agent sees the conversation context it's responding to without having to
-  // ask. Bounded by historyLimit (default 20, server max 200).
+  // Pre-fetch chat history for groups so the agent sees context it would
+  // otherwise have missed: in `requireMention: true` groups the plugin drops
+  // non-mention messages, and in threaded mentions the parent + sibling
+  // replies were never delivered to the agent. DMs are intentionally
+  // skipped — the openclaw session for `roam:<senderId>` already records
+  // every inbound + outbound on that DM (the bot is always a participant),
+  // so a chat.history fetch would be redundant. Bounded by historyLimit
+  // (default 20, server max 200). 0 disables.
   const historyLimit = account.config.historyLimit ?? 20;
-  const threadHistory =
-    isGroup && threadTimestamp !== undefined && historyLimit > 0
-      ? await fetchRoamChatHistory({
-          cfg: config,
-          accountId: account.accountId,
-          apiKey: account.apiKey,
-          apiBaseUrl: account.config.apiBaseUrl,
-          chatId,
-          threadTimestamp,
-          limit: historyLimit,
-        }).catch((err) => {
-          runtime.error?.(`roam: chat.history failed for thread ${threadTimestamp}: ${String(err)}`);
-          return [];
-        })
-      : [];
+  let threadHistory: RoamHistoryMessage[] = [];
+  if (isGroup && historyLimit > 0) {
+    threadHistory = await fetchRoamChatHistory({
+      cfg: config,
+      accountId: account.accountId,
+      apiKey: account.apiKey,
+      apiBaseUrl: account.config.apiBaseUrl,
+      chatId,
+      threadTimestamp,
+      limit: historyLimit,
+    }).catch((err) => {
+      runtime.error?.(
+        `roam: chat.history failed for chat ${chatId} thread=${threadTimestamp ?? "-"}: ${String(err)}`,
+      );
+      return [];
+    });
+  }
   // Filter out the inbound itself (already delivered to the agent as Body) so
   // we don't double-include it. Sort ascending so the model sees chronological
   // order.

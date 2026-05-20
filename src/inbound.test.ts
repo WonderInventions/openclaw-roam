@@ -24,6 +24,7 @@ const {
   mockResolveAllowlistProviderRuntimeGroupPolicy,
   mockWarnMissingProviderGroupPolicyFallbackOnce,
   mockResolveRoamGroupSystemPrompt,
+  mockFetchRoamChatHistory,
 } = vi.hoisted(() => ({
   mockSendMessageRoam: vi.fn().mockResolvedValue({ chatId: "chat-1", timestamp: 1000 }),
   mockSendTypingRoam: vi.fn().mockResolvedValue(undefined),
@@ -57,6 +58,7 @@ const {
   })),
   mockWarnMissingProviderGroupPolicyFallbackOnce: vi.fn(),
   mockResolveRoamGroupSystemPrompt: vi.fn<() => string | undefined>(() => undefined),
+  mockFetchRoamChatHistory: vi.fn().mockResolvedValue([]),
 }));
 
 mockCreateRoamLiveMessageTrack.mockImplementation(() => mockLiveMessageTrack);
@@ -65,6 +67,12 @@ mockCreateRoamAnswerStreamTrack.mockImplementation(() => mockLiveMessageTrack);
 vi.mock("./send.js", () => ({
   sendMessageRoam: mockSendMessageRoam,
   sendTypingRoam: mockSendTypingRoam,
+}));
+
+// Stub chat.history so DM/thread history fetches don't reach the network.
+// Per-test bodies override as needed via mockFetchRoamChatHistory.
+vi.mock("./history.js", () => ({
+  fetchRoamChatHistory: mockFetchRoamChatHistory,
 }));
 
 vi.mock("openclaw/plugin-sdk/media-runtime", () => ({
@@ -534,6 +542,38 @@ describe("handleRoamInbound", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("does not fire chat.typing when a self-message is dropped", async () => {
+      await handleRoamInbound({
+        message: makeMessage({ senderId: "bot-uuid" }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+      expect(mockSendTypingRoam).not.toHaveBeenCalled();
+    });
+
+    it("does not fire chat.typing when an empty-body message is dropped", async () => {
+      await handleRoamInbound({
+        message: makeMessage({ text: "   " }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+      });
+      expect(mockSendTypingRoam).not.toHaveBeenCalled();
+    });
+
+    it("does not fire chat.typing when a mention-only message is dropped", async () => {
+      await handleRoamInbound({
+        message: makeMessage({ text: "<@bot-uuid>" }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+      expect(mockSendTypingRoam).not.toHaveBeenCalled();
     });
   });
 

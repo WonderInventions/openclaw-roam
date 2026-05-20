@@ -1,0 +1,54 @@
+{
+  "name": "media_attachment",
+  "summary": "Alice @-mentions the bot with an image attached. The webhook payload carries an items array; the plugin can pass media URLs into agent context.",
+
+  "setup": {
+    "actor": "alice",
+    "chatType": "group",
+    "groupName": "OC media",
+    "botIsMember": true,
+    "trigger": {
+      "text": "<@<bot.addrId>> look at this",
+      "withItem": "gopher_225x225.png"
+    }
+  },
+
+  "webhook": {
+    "body": {
+      "type": "message",
+      "contentType": "text",
+      "userId": "<alice.addrId>",
+      "chatId": "<chat.id>",
+      "chatType": "group",
+      "text": "<assertText:contains:look at this>",
+      "timestamp": "<gen.now>",
+      "items": "<assertItems:nonEmpty>"
+    }
+  },
+
+  "expectedApiCalls": [
+    {
+      "name": "typing in chat",
+      "method": "POST",
+      "path": "/v1/chat.typing",
+      "body": { "chatId": "<chat.id>" }
+    },
+    {
+      "name": "fetch chat history",
+      "method": "GET",
+      "path": "/v1/chat.history",
+      "query": { "chatId": "<chat.id>", "limit": "20" }
+    },
+    {
+      "name": "reply at top level",
+      "method": "POST",
+      "path": "/v1/chat.post",
+      "body": {
+        "chatId": "<chat.id>",
+        "text": "<assertText:nonEmpty>",
+        "markdown": true,
+        "sync": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "group_not_allowlisted",
+  "summary": "Alice @-mentions the bot in a group the plugin operator hasn't allowlisted on the plugin side. From Roam's perspective the webhook still delivers; the plugin no-ops. expectedApiCalls is empty.",
+
+  "setup": {
+    "actor": "alice",
+    "chatType": "group",
+    "groupName": "OC not allowlisted",
+    "botIsMember": true,
+    "trigger": { "text": "<@<bot.addrId>> not allowed here" }
+  },
+
+  "webhook": {
+    "body": {
+      "type": "message",
+      "contentType": "text",
+      "userId": "<alice.addrId>",
+      "chatId": "<chat.id>",
+      "chatType": "group",
+      "text": "<assertText:contains:not allowed here>",
+      "timestamp": "<gen.now>"
+    }
+  },
+
+  "expectedApiCalls": []
+}
