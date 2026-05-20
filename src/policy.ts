@@ -113,6 +113,19 @@ export function resolveRoamRequireMention(params: {
   return true;
 }
 
+export function resolveRoamReplyInThread(params: {
+  groupConfig?: RoamGroupConfig;
+  wildcardConfig?: RoamGroupConfig;
+}): boolean {
+  if (typeof params.groupConfig?.replyInThread === "boolean") {
+    return params.groupConfig.replyInThread;
+  }
+  if (typeof params.wildcardConfig?.replyInThread === "boolean") {
+    return params.wildcardConfig.replyInThread;
+  }
+  return false;
+}
+
 export function resolveRoamGroupSystemPrompt(params: {
   groupConfig?: RoamGroupConfig;
   wildcardConfig?: RoamGroupConfig;

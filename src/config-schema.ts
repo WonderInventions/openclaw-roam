@@ -26,6 +26,7 @@ export const RoamGroupSchema = z
     enabled: z.boolean().optional(),
     allowFrom: z.array(z.string()).optional(),
     systemPrompt: z.string().optional(),
+    replyInThread: z.boolean().optional(),
   })
   .strict();
 

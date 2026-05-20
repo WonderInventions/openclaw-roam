@@ -38,6 +38,13 @@ export type RoamGroupConfig = {
   allowFrom?: string[];
   /** Optional system prompt snippet for this group. */
   systemPrompt?: string;
+  /**
+   * When true, replies to a top-level message in this group start a new Roam
+   * thread under that message (outbound `threadTimestamp` = inbound `timestamp`).
+   * Inbound messages already in a thread continue to reply within that thread
+   * regardless of this setting. Default: false (reply at top level).
+   */
+  replyInThread?: boolean;
 };
 
 export type RoamAccountConfig = {
