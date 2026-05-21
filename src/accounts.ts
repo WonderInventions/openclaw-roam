@@ -58,14 +58,31 @@ function mergeRoamAccountConfig(cfg: CoreConfig, accountId: string): RoamAccount
   return { ...base, ...account };
 }
 
+/**
+ * Convert an account id to its env-var suffix. Lower-case → upper-case;
+ * non-alphanumerics (hyphens, dots) collapse to underscore. So an account id
+ * like `org-bot` resolves to env `ROAM_API_KEY_ORG_BOT`.
+ */
+function accountEnvSuffix(accountId: string): string {
+  return accountId.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+}
+
 function resolveRoamApiKey(
   cfg: CoreConfig,
   opts: { accountId?: string },
 ): { apiKey: string; source: ResolvedRoamAccount["apiKeySource"] } {
   const merged = mergeRoamAccountConfig(cfg, opts.accountId ?? DEFAULT_ACCOUNT_ID);
+  const accountId = opts.accountId ?? DEFAULT_ACCOUNT_ID;
 
+  // Per-account env override (e.g. ROAM_API_KEY_ORG for accounts.org). Checked
+  // first so operators running multi-account setups can keep tokens out of
+  // config. Falls back to ROAM_API_KEY (applies to the default account only).
+  const perAccountEnv = process.env[`ROAM_API_KEY_${accountEnvSuffix(accountId)}`]?.trim();
+  if (perAccountEnv) {
+    return { apiKey: perAccountEnv, source: "env" };
+  }
   const envKey = process.env.ROAM_API_KEY?.trim();
-  if (envKey && (!opts.accountId || opts.accountId === DEFAULT_ACCOUNT_ID)) {
+  if (envKey && accountId === DEFAULT_ACCOUNT_ID) {
     return { apiKey: envKey, source: "env" };
   }
 

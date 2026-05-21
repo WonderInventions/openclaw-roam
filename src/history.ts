@@ -65,8 +65,13 @@ export async function fetchRoamChatHistory(
   try {
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
+      const reqId =
+        response.headers.get("x-request-id") ??
+        response.headers.get("request-id") ??
+        "";
+      const reqIdTail = reqId ? ` reqId=${reqId}` : "";
       logger.warn(
-        `[roam-history] FAIL chat=${chatId} thread=${params.threadTimestamp ?? "-"} status=${response.status} dt=${Date.now() - startedAt}ms body=${errorBody.slice(0, 200)}`,
+        `[roam-history] FAIL chat=${chatId} thread=${params.threadTimestamp ?? "-"} status=${response.status} dt=${Date.now() - startedAt}ms${reqIdTail} body=${errorBody.slice(0, 200)}`,
       );
       return [];
     }

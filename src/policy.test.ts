@@ -3,6 +3,7 @@ import {
   normalizeRoamAllowlist,
   resolveRoamAllowlistMatch,
   resolveRoamGroupSystemPrompt,
+  resolveRoamReplyInThread,
 } from "./policy.js";
 
 describe("normalizeRoamAllowlist", () => {
@@ -108,5 +109,39 @@ describe("resolveRoamGroupSystemPrompt", () => {
         wildcardConfig: { systemPrompt: "" },
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("resolveRoamReplyInThread", () => {
+  // Smart default: proactive bots (requireMention: false) need threading;
+  // mention-only bots reply at top level. Explicit settings always win.
+
+  it("defaults to true when proactive (requireMention: false)", () => {
+    expect(resolveRoamReplyInThread({ groupConfig: { requireMention: false } })).toBe(
+      true,
+    );
+  });
+
+  it("defaults to false when mention-only (no requireMention override = true)", () => {
+    expect(resolveRoamReplyInThread({})).toBe(false);
+  });
+
+  it("explicit groupConfig.replyInThread overrides the smart default", () => {
+    expect(
+      resolveRoamReplyInThread({
+        groupConfig: { requireMention: false, replyInThread: false },
+      }),
+    ).toBe(false);
+    expect(
+      resolveRoamReplyInThread({
+        groupConfig: { requireMention: true, replyInThread: true },
+      }),
+    ).toBe(true);
+  });
+
+  it("inherits requireMention from wildcardConfig for the smart default", () => {
+    expect(
+      resolveRoamReplyInThread({ wildcardConfig: { requireMention: false } }),
+    ).toBe(true);
   });
 });

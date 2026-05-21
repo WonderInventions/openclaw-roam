@@ -36,6 +36,14 @@ type RoamWebhookTarget = {
   ownerId?: string;
   /** Standard-webhooks signing secret for verifying inbound payloads. */
   secret: string;
+  /**
+   * Health/freshness callback. `lastInboundAt` is set when a webhook is
+   * received and accepted (post-signature, pre-gating); `lastOutboundAt` is
+   * set each time the plugin successfully posts to Roam. Both are
+   * `Date.now()`-style milliseconds since epoch — NOT the raw µs timestamp
+   * Roam uses to index messages. Consumers typically surface these as
+   * "last seen / last replied" timestamps in operator UIs.
+   */
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
 };
 

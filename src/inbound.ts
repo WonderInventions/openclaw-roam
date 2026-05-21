@@ -117,32 +117,54 @@ function buildNotAllowlistedNotice(params: { accountId: string; chatId: string }
   ].join("\n");
 }
 
+function buildNotAllowlistedDmNotice(params: {
+  accountId: string;
+  senderId: string;
+}): string {
+  return [
+    `Hi — I see your message, but you're not on my allowlist for the \`${params.accountId}\` account, so I can't reply yet.`,
+    ``,
+    `To enable me to reply, either:`,
+    `• Set my \`dmPolicy\` to \`"open"\` (allow any workspace member to DM me), or`,
+    `• Add yourself to the allowlist. Your user id is \`${params.senderId}\`.`,
+  ].join("\n");
+}
+
+/**
+ * Build a regex that matches `<@<botId>>` or `<!@<botId>>` for a known bot ID.
+ * Returns null when `botId` is undefined — callers must handle that explicitly,
+ * since "fallback: strip all mentions" is the right thing for body cleanup
+ * (`stripBotMention`) but the wrong thing for detection (`wasBotMentioned`).
+ */
+function buildBotMentionRegex(botId: string, flags = "gi"): RegExp {
+  const escaped = botId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`<!?@${escaped}>`, flags);
+}
+
 /** Strip Roam mention syntax for the bot's own user ID. */
 function stripBotMention(text: string, botId?: string): string {
   if (botId) {
-    // Only strip the bot's own mention, preserve other user mentions
-    const escaped = botId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return text.replace(new RegExp(`<!?@${escaped}>`, "gi"), "").trim();
+    return text.replace(buildBotMentionRegex(botId, "gi"), "").trim();
   }
-  // Fallback: strip all <@xxx> mentions when bot ID is unknown
+  // Fallback: strip all <@xxx> mentions when bot ID is unknown.
   return text.replace(/<!?@[0-9a-f-]+>/gi, "").trim();
 }
 
 /** Check if the bot was mentioned in the message. */
 function wasBotMentioned(text: string, botId?: string): boolean {
-  if (botId) {
-    const escaped = botId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`<!?@${escaped}>`, "i").test(text);
+  if (!botId) {
+    // Without a known botId, we cannot reliably detect bot mentions.
+    // Return false to avoid waking the bot on arbitrary user mentions.
+    return false;
   }
-  // Without a known botId, we cannot reliably detect bot mentions.
-  // Return false to avoid waking the bot on arbitrary user mentions.
-  return false;
+  return buildBotMentionRegex(botId, "i").test(text);
 }
 
 /** Download media URLs to local files for the media understanding pipeline. */
 async function downloadMediaToLocal(
   mediaUrls: string[],
   mediaTypes: string[],
+  log?: (msg: string) => void,
 ): Promise<{ paths: string[]; urls: string[]; types: string[] }> {
   const paths: string[] = [];
   const urls: string[] = [];
@@ -156,9 +178,15 @@ async function downloadMediaToLocal(
       paths.push(saved.path);
       urls.push(url);
       types.push(mime ?? fetched.contentType ?? "application/octet-stream");
-    } catch {
-      // Skip failed downloads; don't block message processing.
+    } catch (err) {
+      // Skip failed downloads; don't block message processing — but do log
+      // why, so operators investigating "the agent didn't see my image" have
+      // a breadcrumb instead of silence.
+      log?.(`roam-media: download failed url=${url} err=${String(err)}`);
     }
+  }
+  if (mediaUrls.length > 0) {
+    log?.(`roam-media: downloaded ${paths.length}/${mediaUrls.length}`);
   }
   return { paths, urls, types };
 }
@@ -403,6 +431,22 @@ export async function handleRoamInbound(params: {
             runtime.error?.(`roam[${account.accountId}]: pairing reply failed for ${senderId}: ${String(err)}`);
           },
         });
+      } else if (
+        shouldSendNotAllowlistedNotice(`dm:${account.accountId}:${senderId}`)
+      ) {
+        // Allowlist-style DM denial. Mirror the group-side courtesy notice:
+        // tell the sender how to get added rather than silently dropping.
+        // Debounced per (accountId, senderId) per process so a single stranger
+        // can't make us spam.
+        await sendMessageRoam(
+          chatId,
+          buildNotAllowlistedDmNotice({ accountId: account.accountId, senderId }),
+          { accountId: account.accountId },
+        ).catch((err) => {
+          runtime.error?.(
+            `roam[${account.accountId}]: failed to post not-allowlisted DM notice for ${senderId}: ${String(err)}`,
+          );
+        });
       }
       runtime.log?.(`roam[${account.accountId}]: drop DM sender ${senderId} (reason=${access.reason})`);
       return;
@@ -610,7 +654,11 @@ export async function handleRoamInbound(params: {
   let mediaUrls: string[] | undefined;
   let mediaTypes: string[] | undefined;
   if (message.mediaUrls?.length) {
-    const downloaded = await downloadMediaToLocal(message.mediaUrls, message.mediaTypes ?? []);
+    const downloaded = await downloadMediaToLocal(
+      message.mediaUrls,
+      message.mediaTypes ?? [],
+      (msg) => runtime.log?.(`roam[${account.accountId}] ${msg}`),
+    );
     if (downloaded.paths.length > 0) {
       mediaPaths = downloaded.paths;
       mediaUrls = downloaded.urls;
@@ -657,7 +705,16 @@ export async function handleRoamInbound(params: {
   const allowNativeAnswerTransport = nativeTransport === true;
   const useStreaming = previewMode === "partial" && account.apiKey.length > 0;
 
-  const onActivity = () => statusSink?.({ lastOutboundAt: Date.now() });
+  // `onActivity` fires when a track actually sends to Roam (chat.post or
+  // chat.update returned OK). We also use this signal to stop the typing
+  // pulse: stopping on the first agent token (the old behavior) leaves a
+  // visible gap between "typing disappears" and "first message arrives" when
+  // the model thinks for a while. Keeping the pulse until the first real send
+  // means the indicator is replaced by the message without a flicker.
+  const onActivity = () => {
+    stopTypingPulse();
+    statusSink?.({ lastOutboundAt: Date.now() });
+  };
   // Thinking uses the native stream lifecycle with kind="thinking" so Roam
   // renders it as a collapsed thought-bubble (ThinkingContent) rather than a
   // normal chat message. The stream lifecycle does not currently support
@@ -673,13 +730,21 @@ export async function handleRoamInbound(params: {
     : null;
   // Native streaming is enabled when `streaming.nativeTransport: true`. Falls
   // back to the draft `chat.post` + `chat.update` path otherwise.
+  // Capture the most recent stream error so the fallback log can include the
+  // root cause inline (otherwise "fallback chat.post" lands in logs without
+  // context for *why* the stream failed).
+  let lastAnswerStreamError: string | undefined;
+  const recordAnswerStreamError = (label: string) => (msg: string) => {
+    lastAnswerStreamError = msg;
+    runtime.error?.(`roam-stream[${label}]: ${msg}`);
+  };
   const answerTrack = useStreaming
     ? allowNativeAnswerTransport
       ? createRoamAnswerStreamTrack({
           chatId,
           accountId: account.accountId,
           apiKey: account.apiKey,
-          onError: (msg) => runtime.error?.(`roam-stream[answer-native]: ${msg}`),
+          onError: recordAnswerStreamError("answer-native"),
           onActivity,
         })
       : createRoamLiveMessageTrack({
@@ -687,7 +752,7 @@ export async function handleRoamInbound(params: {
           threadTimestamp,
           accountId: account.accountId,
           apiKey: account.apiKey,
-          onError: (msg) => runtime.error?.(`roam-stream[answer]: ${msg}`),
+          onError: recordAnswerStreamError("answer"),
           onActivity,
         })
     : null;
@@ -724,7 +789,7 @@ export async function handleRoamInbound(params: {
           ? { ...payload, text: fullText.slice(committed) }
           : payload;
       runtime.log?.(
-        `roam-stream[answer]: fallback chat.post chat=${chatId} fullLen=${fullText.length} committed=${committed} sendLen=${(payloadToSend.text ?? "").length}`,
+        `roam-stream[answer]: fallback chat.post chat=${chatId} fullLen=${fullText.length} committed=${committed} sendLen=${(payloadToSend.text ?? "").length} cause=${lastAnswerStreamError ?? "unknown"}`,
       );
       await deliverRoamReply({
         payload: payloadToSend,
@@ -788,8 +853,9 @@ export async function handleRoamInbound(params: {
         onPartialReply:
           useStreaming && answerTrack
             ? (payload: { text?: string }) => {
-                // First partial token = model has started speaking; stop typing.
-                stopTypingPulse();
+                // Typing pulse is stopped by `onActivity` on the first
+                // successful send, NOT here on the first token — see the
+                // comment on `onActivity` above.
                 return answerTrack.pushAccumulated(payload.text ?? "");
               }
             : undefined,
@@ -816,7 +882,8 @@ export async function handleRoamInbound(params: {
       },
     });
   } finally {
-    clearInterval(typingInterval);
+    // Inner finally: track lifecycle is tied to dispatch. The outer finally
+    // owns `clearInterval` — don't duplicate it here.
     if (thinkingTrack) {
       await thinkingTrack.finalize();
     }

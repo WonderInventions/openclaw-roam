@@ -123,7 +123,13 @@ export function resolveRoamReplyInThread(params: {
   if (typeof params.wildcardConfig?.replyInThread === "boolean") {
     return params.wildcardConfig.replyInThread;
   }
-  return false;
+  // Smart default: proactive bots (`requireMention: false`) need threading to
+  // avoid cluttering the channel top-level — every channel message produces a
+  // reply, and without threads those replies pile up at top level. Mention-
+  // only bots are summoned deliberately, so replying at top level reads more
+  // naturally. Explicit per-group/wildcard `replyInThread` always wins.
+  const requireMention = resolveRoamRequireMention(params);
+  return !requireMention;
 }
 
 export function resolveRoamGroupSystemPrompt(params: {

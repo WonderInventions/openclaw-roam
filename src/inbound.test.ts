@@ -552,6 +552,73 @@ describe("handleRoamInbound", () => {
       const opts = mockSendMessageRoam.mock.calls[0][2];
       expect(opts).toMatchObject({ threadTimestamp: 1700000000000001 });
     });
+
+    it("posts a one-time notice when a non-allowlisted sender DMs the bot", async () => {
+      // dmPolicy: "allowlist" + sender not in allowFrom → access.decision is
+      // something other than "allow" / "pairing". Mirror the group case: post
+      // a courtesy notice telling the sender how to get added.
+      mockResolveDmGroupAccessWithCommandGate.mockReturnValueOnce({
+        decision: "deny",
+        reason: "allowlist",
+        commandAuthorized: false,
+        shouldBlockControlCommand: false,
+        effectiveGroupAllowFrom: undefined,
+      });
+
+      await handleRoamInbound({
+        message: makeMessage({
+          chatType: "direct",
+          chatId: "dm-chat",
+          senderId: "stranger-uuid",
+          text: "hello",
+        }),
+        account: makeAccount({ accountId: "org" }),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+
+      expect(mockSendMessageRoam).toHaveBeenCalledTimes(1);
+      const [target, text, opts] = mockSendMessageRoam.mock.calls[0];
+      expect(target).toBe("dm-chat");
+      expect(text).toContain("you're not on my allowlist");
+      expect(text).toContain("`org`");
+      expect(text).toContain("`stranger-uuid`");
+      expect(opts).toMatchObject({ accountId: "org" });
+      expect(mockDispatchInboundReplyWithBase).not.toHaveBeenCalled();
+    });
+
+    it("does not post a DM notice when the decision is 'pairing'", async () => {
+      // Pairing decisions issue their own challenge — don't double up.
+      mockResolveDmGroupAccessWithCommandGate.mockReturnValueOnce({
+        decision: "pairing",
+        reason: "needs-pairing",
+        commandAuthorized: false,
+        shouldBlockControlCommand: false,
+        effectiveGroupAllowFrom: undefined,
+      });
+
+      await handleRoamInbound({
+        message: makeMessage({
+          chatType: "direct",
+          chatId: "dm-chat",
+          senderId: "new-user",
+          text: "hi",
+        }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+
+      // sendMessageRoam may be called by the pairing flow, but NOT with our
+      // not-allowlisted notice text. Easiest check: no call contains
+      // "not on my allowlist".
+      const notices = mockSendMessageRoam.mock.calls.filter((c) =>
+        typeof c[1] === "string" ? c[1].includes("not on my allowlist") : false,
+      );
+      expect(notices).toHaveLength(0);
+    });
   });
 
   describe("empty text handling", () => {
