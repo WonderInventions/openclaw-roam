@@ -44,4 +44,25 @@ describe("RoamConfigSchema", () => {
     const result = RoamConfigSchema.safeParse({ bogusField: "nope" });
     expect(result.success).toBe(false);
   });
+
+  it("defaults dmPolicy to 'open' (no opt-in needed for workspace DMs)", () => {
+    const result = RoamConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.dmPolicy).toBe("open");
+    }
+  });
+
+  it("accepts dmPolicy='open' without requiring allowFrom: ['*']", () => {
+    // Personal bots are owner-locked above this layer; org bots are
+    // intentionally workspace-open by default. Removing the SDK's
+    // requireChannelOpenAllowFrom guard is deliberate.
+    const result = RoamConfigSchema.safeParse({ dmPolicy: "open" });
+    expect(result.success).toBe(true);
+  });
+
+  it("still accepts dmPolicy='pairing' as opt-in", () => {
+    const result = RoamConfigSchema.safeParse({ dmPolicy: "pairing" });
+    expect(result.success).toBe(true);
+  });
 });

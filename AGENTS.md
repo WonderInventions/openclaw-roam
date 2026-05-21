@@ -131,14 +131,18 @@ threading) when `streaming.nativeTransport` is unset.
 `inbound.ts` runs these before dispatching:
 
 1. **Self-message drop** — `botId === senderId` → drop, log only.
-2. **Empty body + no media** → drop silently.
-3. **Group allowlist match** — `groups: { "<chatId>": {…} }` (and `"*"`
+2. **Owner-only filter** (PATs only) — `ownerId` set + `senderId !== ownerId`
+   → drop. Personal bots respond only to their owner; uniform across DM and
+   group. Skipped entirely for org tokens (no `ownerId`).
+3. **Empty body + no media** → drop silently.
+4. **Group allowlist match** — `groups: { "<chatId>": {…} }` (and `"*"`
    wildcard). Out-of-list groups dropped.
-4. **`enabled: false`** on the matched group → drop.
-5. **DM/group access decision** — `resolveDmGroupAccessWithCommandGate` from
-   the host runtime. May trigger pairing flow in DMs.
-6. **`groupPolicy` + per-group allowlist** — `open` / `allowlist` / `disabled`.
-7. **Mention gate** — `requireMention: true` + no mention detected → drop.
+5. **`enabled: false`** on the matched group → drop.
+6. **DM/group access decision** — `resolveDmGroupAccessWithCommandGate` from
+   the host runtime. `dmPolicy` defaults to `"open"` — pairing remains opt-in
+   via explicit `dmPolicy: "pairing"`.
+7. **`groupPolicy` + per-group allowlist** — `open` / `allowlist` / `disabled`.
+8. **Mention gate** — `requireMention: true` + no mention detected → drop.
    Control commands bypass via `commandAuthorized`.
 
 Typing pulse starts **after** all drop checks pass. The shared contract
