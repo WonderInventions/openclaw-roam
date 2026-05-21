@@ -184,15 +184,19 @@ Don't add Roam-internal-only behaviors to fixtures — those belong in
 - **`threadKey` is dead.** Earlier code used a string `threadKey`; the deployed
   API uses microsecond `threadTimestamp` and the two are mutually exclusive.
   Don't reintroduce `threadKey`.
-- **Microseconds vs milliseconds.** Webhook normalization carries both forms
-  on `RoamInboundMessage`: `timestamp` (ms, lossy — for ctxPayload + activity
-  records) and `timestampMicros` (µs, exact — preserved from the raw webhook).
-  Anything that round-trips through a Roam API call (`chat.post` with
-  `threadTimestamp`, `chat.history` thread queries, etc.) MUST use
-  `timestampMicros`. `message.timestamp * 1000` looks correct but loses the
-  µs remainder, and Roam indexes by exact µs — the post will 400 with
-  "threadTimestamp X is not an existing message". Mixing units the other way
-  silently produces threads in the year 53890 or chats from 1970.
+- **Microseconds vs milliseconds.** Timestamps are identifiers and we treat
+  them as immutable. `RoamInboundMessage` carries only `timestampMicros` (µs,
+  the raw webhook value) and `threadTimestamp` (also µs). Both are passed
+  through to Roam API calls unchanged — Roam indexes messages by exact µs and
+  will 400 with "threadTimestamp X is not an existing message" if a value is
+  rounded or reconstructed (e.g. `Math.floor(µs / 1000) * 1000`).
+
+  Consumers that genuinely need a `Date.now()`-style ms value (agent
+  ctxPayload `Timestamp`, host status sinks, activity records) convert
+  explicitly at the call site: `Math.floor(message.timestampMicros / 1000)`.
+  Keep the conversion inline — a helper would hide the unit boundary, and the
+  whole reason this section exists is that the boundary used to be implicit
+  and bugs flowed across it.
 
 ## Releasing
 

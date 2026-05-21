@@ -396,9 +396,12 @@ describe("webhookEventToInbound", () => {
       chatType: "group",
     });
     expect(inbound.timestampMicros).toBe(1779380025366001);
-    expect(inbound.timestamp).toBe(1779380025366); // ms (floor div)
-    // The critical invariant: timestampMicros must NOT round-trip through ms.
-    expect(inbound.timestamp * 1000).not.toBe(inbound.timestampMicros);
+    // The inbound message carries ONLY the µs identifier. Consumers that need ms
+    // convert at the boundary with Math.floor(timestampMicros / 1000); the lossy
+    // form is never stored on the message itself.
+    expect(Math.floor(inbound.timestampMicros / 1000) * 1000).not.toBe(
+      inbound.timestampMicros,
+    );
   });
 });
 

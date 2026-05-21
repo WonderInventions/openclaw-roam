@@ -132,13 +132,10 @@ function parseRoamWebhookEvent(raw: unknown): RoamWebhookEvent | null {
 }
 
 export function webhookEventToInbound(event: RoamWebhookEvent): RoamInboundMessage {
-  // Roam timestamps are microsecond-precision. We carry both forms:
-  //   - timestampMs (ms, lossy): used in agent ctxPayload + activity records.
-  //   - timestampMicros (µs, exact): used for anything that round-trips through
-  //     Roam's API (e.g. starting a thread under this message). Multiplying ms
-  //     back to µs loses the original remainder and Roam will 400 with
-  //     "threadTimestamp X is not an existing message".
-  const timestampMs = Math.floor(event.timestamp / 1000);
+  // Roam timestamps are microsecond-precision. We preserve the raw value
+  // unchanged — Roam indexes messages by exact µs, so any consumer that round-
+  // trips through a Roam API call (e.g. starting a thread under this message)
+  // must use `timestampMicros`. Consumers that want ms convert at the boundary.
   // Derive chat type from the event's chatType field ("dm" → "direct", "channel"/"group" → "group").
   const chatType: "direct" | "group" = event.chatType === "dm" ? "direct" : "group";
   const msg: RoamInboundMessage = {
@@ -147,7 +144,6 @@ export function webhookEventToInbound(event: RoamWebhookEvent): RoamInboundMessa
     senderId: event.userId,
     senderName: "",
     text: event.text,
-    timestamp: timestampMs,
     timestampMicros: event.timestamp,
     chatType,
     // Keep threadTimestamp in microseconds (raw API value). Roam's chat.post
@@ -255,7 +251,7 @@ async function handleRoamWebhookRequest(
         channel: "roam",
         accountId: target.account.accountId,
         direction: "inbound",
-        at: message.timestamp,
+        at: Math.floor(message.timestampMicros / 1000),
       });
 
       handleRoamInbound({

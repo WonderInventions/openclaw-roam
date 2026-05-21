@@ -197,15 +197,13 @@ vi.mock("./policy.js", () => ({
 // --- Helpers ---
 
 function makeMessage(overrides?: Partial<RoamInboundMessage>): RoamInboundMessage {
-  const timestamp = Date.now();
   return {
     messageId: "msg-1",
     chatId: "chat-1",
     senderId: "user-1",
     senderName: "Alice",
     text: "hello bot",
-    timestamp,
-    timestampMicros: timestamp * 1000,
+    timestampMicros: Date.now() * 1000,
     chatType: "direct",
     ...overrides,
   };
@@ -872,17 +870,17 @@ describe("handleRoamInbound", () => {
 
     it("calls statusSink on inbound", async () => {
       const statusSink = vi.fn();
-      const ts = Date.now();
+      const tsMs = Date.now();
 
       await handleRoamInbound({
-        message: makeMessage({ timestamp: ts }),
+        message: makeMessage({ timestampMicros: tsMs * 1000 }),
         account: makeAccount(),
         config: defaultConfig,
         runtime: defaultRuntime,
         statusSink,
       });
 
-      expect(statusSink).toHaveBeenCalledWith({ lastInboundAt: ts });
+      expect(statusSink).toHaveBeenCalledWith({ lastInboundAt: tsMs });
     });
 
     it("uses the live-message draft track for answer streaming", async () => {
