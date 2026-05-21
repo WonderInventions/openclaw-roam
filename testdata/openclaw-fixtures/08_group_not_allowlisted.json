@@ -1,13 +1,13 @@
 {
   "name": "group_not_allowlisted",
-  "summary": "Operator has explicitly opted into `groupPolicy: allowlist` and listed a different chat. Alice @-mentions the bot in this (non-allowlisted) group. From Roam's perspective the webhook still delivers; the plugin no-ops. expectedApiCalls is empty.",
+  "summary": "Operator has explicitly opted into `groupPolicy: allowlist` and listed a different chat. Alice chats (without mentioning the bot) in this non-allowlisted group. From Roam's perspective the webhook still delivers; the plugin no-ops. expectedApiCalls is empty. (The mention branch of this scenario posts a one-time courtesy notice; that's covered by inbound.test.ts.)",
 
   "setup": {
     "actor": "alice",
     "chatType": "group",
     "groupName": "OC not allowlisted",
     "botIsMember": true,
-    "trigger": { "text": "<@<bot.addrId>> not allowed here" }
+    "trigger": { "text": "not allowed here" }
   },
 
   "webhook": {
