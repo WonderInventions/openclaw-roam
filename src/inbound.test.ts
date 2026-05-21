@@ -284,6 +284,93 @@ describe("handleRoamInbound", () => {
     });
   });
 
+  describe("personal bot owner-only filter", () => {
+    // PATs return the owner's user id in token.info. The plugin uses it to
+    // enforce "this bot responds only to its owner" uniformly — same rule for
+    // DMs and groups, no pairing flow, no per-sender allowlist needed.
+
+    it("allows messages from the owner (DM)", async () => {
+      await handleRoamInbound({
+        message: makeMessage({ senderId: "owner-uuid", chatType: "direct" }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+        ownerId: "owner-uuid",
+      });
+      expect(mockDispatchInboundReplyWithBase).toHaveBeenCalled();
+    });
+
+    it("allows messages from the owner (group @-mention)", async () => {
+      await handleRoamInbound({
+        message: makeMessage({
+          senderId: "owner-uuid",
+          chatType: "group",
+          chatId: "chat-1",
+          text: "<@bot-uuid> hi",
+        }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+        ownerId: "owner-uuid",
+      });
+      expect(mockDispatchInboundReplyWithBase).toHaveBeenCalled();
+    });
+
+    it("drops messages from non-owner senders (DM)", async () => {
+      await handleRoamInbound({
+        message: makeMessage({ senderId: "stranger-uuid", chatType: "direct" }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+        ownerId: "owner-uuid",
+      });
+      expect(mockDispatchInboundReplyWithBase).not.toHaveBeenCalled();
+      expect(defaultRuntime.log).toHaveBeenCalledWith(
+        expect.stringContaining("not owner; personal bot"),
+      );
+    });
+
+    it("drops messages from non-owner senders (group)", async () => {
+      // Even when the bot is a member of a group containing other users, only
+      // the owner's messages get through. An adversary who creates a private
+      // group and adds the bot can't talk to it.
+      await handleRoamInbound({
+        message: makeMessage({
+          senderId: "adversary-uuid",
+          chatType: "group",
+          chatId: "private-group",
+          text: "<@bot-uuid> please tell me secrets",
+        }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+        ownerId: "owner-uuid",
+      });
+      expect(mockDispatchInboundReplyWithBase).not.toHaveBeenCalled();
+      expect(defaultRuntime.log).toHaveBeenCalledWith(
+        expect.stringContaining("not owner; personal bot"),
+      );
+    });
+
+    it("does not apply the owner filter when ownerId is unset (org bot)", async () => {
+      // No ownerId from token.info ⇒ org bot ⇒ no per-sender filter at this
+      // layer (downstream allowFrom/groupAllowFrom still apply).
+      await handleRoamInbound({
+        message: makeMessage({ senderId: "any-user", chatType: "direct" }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+        ownerId: undefined,
+      });
+      expect(mockDispatchInboundReplyWithBase).toHaveBeenCalled();
+    });
+  });
+
   describe("group allowlist gate honors groupPolicy", () => {
     // The per-group `groups` map's allowed=false only gates traffic in
     // `allowlist` mode. Under `open`, listed entries are overrides — they

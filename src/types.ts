@@ -114,6 +114,14 @@ export type RoamBotIdentity = {
   name: string;
   /** Bot avatar URL (optional, from the token's image). */
   imageUrl?: string;
+  /**
+   * Owner's user UUID — only present for Personal Access Tokens (PATs), where
+   * the token belongs to a human user. The plugin treats this as the only
+   * sender a Personal Bot will respond to, on any surface (DM or group).
+   *
+   * Absent for org API keys, which have no individual owner.
+   */
+  ownerId?: string;
 };
 
 // --- Roam API types ---

@@ -201,14 +201,31 @@ export async function handleRoamInbound(params: {
   runtime: RuntimeEnv;
   /** Bot's chat address ID for self-message filtering. */
   botId?: string;
+  /**
+   * Owner's user UUID (PATs only). When set, the handler responds only to
+   * messages from the owner — uniform across DM and group surfaces.
+   */
+  ownerId?: string;
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
 }): Promise<void> {
-  const { message, account, config, runtime, botId, statusSink } = params;
+  const { message, account, config, runtime, botId, ownerId, statusSink } = params;
   const core = getRoamRuntime();
 
   // Drop messages sent by the bot itself to prevent infinite loops.
   if (botId && message.senderId === botId) {
     runtime.log?.(`roam[${account.accountId}]: drop self-message from bot ${botId}`);
+    return;
+  }
+
+  // Personal bots respond only to their owner. token.info gives us the owner
+  // for PATs (rmp-); org tokens (rmk-) have no owner and skip this gate. The
+  // check is uniform across DM and group surfaces — a non-owner DMing the bot
+  // and a non-owner messaging in a group the bot joined are functionally the
+  // same and should be treated identically.
+  if (ownerId && message.senderId !== ownerId) {
+    runtime.log?.(
+      `roam[${account.accountId}]: drop sender ${message.senderId} (not owner; personal bot)`,
+    );
     return;
   }
 

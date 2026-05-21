@@ -71,20 +71,27 @@ bindings: [
 
 ## PAT vs Org tokens
 
-| Token prefix | `token.info` field | Can be a group member?         | Webhook coverage in groups       |
-| ------------ | ------------------ | ------------------------------ | -------------------------------- |
-| `rmp-` (PAT) | `data.bot`         | No — represents a human user.  | Only events that @-mention.      |
-| `rmk-` (Org) | `data.user`        | Yes — added like any member.   | Every event in member groups.    |
+| Token prefix | `token.info` returns                       | Can be a group member?         | Webhook coverage in groups       |
+| ------------ | ------------------------------------------ | ------------------------------ | -------------------------------- |
+| `rmp-` (PAT) | `user` (owner) **+** `bot` (PAT identity)  | No — represents a human user.  | Only events that @-mention.      |
+| `rmk-` (Org) | `user` only (which IS the bot identity)    | Yes — added like any member.   | Every event in member groups.    |
 
-`fetchRoamBotIdentity` (in `monitor.ts`) falls back to `data.user` when
-`data.bot` is absent. The two-shape response is load-bearing — don't assume
-one or the other.
+`fetchRoamBotIdentity` (in `monitor.ts`) uses the presence of `data.bot.id`
+to disambiguate: if present → PAT, persona = `data.bot`, owner = `data.user.id`;
+absent → Org, persona = `data.user`, no owner.
+
+**Owner-only filter for PATs.** When `ownerId` is set on the identity (= PAT),
+`handleRoamInbound` drops every inbound where `senderId !== ownerId`, uniformly
+across DM and group. Personal bots respond only to their owner; an adversary
+creating a private group and adding the bot can't talk to it. Org bots have
+no `ownerId` and skip the filter (downstream `allowFrom`/`groupAllowFrom`
+still apply as opt-in allowlists).
 
 **Implication for `requireMention`:**
 - Org bots in a group can default to `requireMention: false` (proactive); they
   see every message and can decide whether to chime in.
 - PAT bots should keep `requireMention: true` (default); they only get the
-  webhook on mention anyway.
+  webhook on mention anyway, and the owner-only filter already gates them.
 
 ## Threading
 

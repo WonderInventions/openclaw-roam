@@ -124,12 +124,13 @@ describe("monitorRoamProvider", () => {
     expect(tokenInfoCall![1].headers.Authorization).toBe("Bearer test-api-key");
   });
 
-  it("stores bot identity on account when token.info succeeds", async () => {
+  it("stores bot identity on account when token.info succeeds (org token shape)", async () => {
+    // Org tokens (rmk-) return only `user`, which IS the bot identity. No owner.
     const account = defaultAccount();
     mockResolveRoamAccount.mockReturnValue(account);
     mockFetchInner.mockResolvedValue({
       ok: true,
-      json: async () => ({ bot: { id: "bot-uuid", name: "TestBot" } }),
+      json: async () => ({ user: { id: "bot-uuid", name: "TestBot" } }),
     });
 
     const { stop } = await monitorRoamProvider({});
@@ -139,6 +140,32 @@ describe("monitorRoamProvider", () => {
       id: "bot-uuid",
       name: "TestBot",
       imageUrl: undefined,
+      ownerId: undefined,
+    });
+  });
+
+  it("captures the owner id from token.info for PATs", async () => {
+    // PATs (rmp-) return both `user` (human owner) and `bot` (the PAT's own
+    // address). The plugin uses `bot.id` as its self-message identity and
+    // `user.id` as the owner the personal bot will respond to.
+    const account = defaultAccount();
+    mockResolveRoamAccount.mockReturnValue(account);
+    mockFetchInner.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        user: { id: "owner-uuid", name: "Alice" },
+        bot: { id: "pat-bot-uuid", name: "Alice's Bot" },
+      }),
+    });
+
+    const { stop } = await monitorRoamProvider({});
+    stop();
+
+    expect(account.botIdentity).toEqual({
+      id: "pat-bot-uuid",
+      name: "Alice's Bot",
+      imageUrl: undefined,
+      ownerId: "owner-uuid",
     });
   });
 
