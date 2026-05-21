@@ -28,6 +28,12 @@ type RoamWebhookTarget = {
   path: string;
   /** Bot's chat address ID for self-message filtering. */
   botId?: string;
+  /**
+   * Owner's user UUID (PATs only). When set, the inbound handler drops every
+   * message whose sender is not the owner — a personal bot only responds to
+   * its owner. Undefined for org tokens.
+   */
+  ownerId?: string;
   /** Standard-webhooks signing secret for verifying inbound payloads. */
   secret: string;
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
@@ -260,6 +266,7 @@ async function handleRoamWebhookRequest(
         config: target.config,
         runtime: target.runtime,
         botId: target.botId,
+        ownerId: target.ownerId,
         statusSink: target.statusSink,
       }).catch((err) => {
         target.runtime.error?.(
@@ -374,13 +381,15 @@ async function fetchRoamBotIdentity(
       if (!response.ok) {
         return null;
       }
-      // PATs (rmp-) return both `user` (the person) and `bot` (the bot persona).
-      // Org tokens (rmk-) return only `user` (the token IS the bot identity).
+      // PATs (rmp-) return both `user` (the human owner) and `bot` (the PAT's
+      // distinct bot persona). Org tokens (rmk-) return only `user`, which IS
+      // the bot identity. Use the presence of `data.bot.id` to disambiguate.
       const data = (await response.json()) as {
         user?: { id?: string; name?: string; imageUrl?: string };
         bot?: { id?: string; name?: string; imageUrl?: string };
       };
-      const persona = data.bot?.id ? data.bot : data.user;
+      const isPat = Boolean(data.bot?.id);
+      const persona = isPat ? data.bot : data.user;
       if (!persona?.id || !persona?.name) {
         return null;
       }
@@ -388,6 +397,8 @@ async function fetchRoamBotIdentity(
         id: persona.id,
         name: persona.name,
         imageUrl: persona.imageUrl || undefined,
+        // Owner is only meaningful for PATs. For org tokens, leave undefined.
+        ownerId: isPat ? data.user?.id : undefined,
       };
     } finally {
       await release();
@@ -465,6 +476,7 @@ export async function monitorRoamProvider(opts: RoamMonitorOptions): Promise<{ s
     runtime,
     path: webhookPath,
     botId: botIdentity?.id,
+    ownerId: botIdentity?.ownerId,
     secret: webhookSecret,
     statusSink: opts.statusSink,
   });
