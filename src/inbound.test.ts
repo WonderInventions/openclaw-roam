@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeEnv } from "../runtime-api.js";
 import type { ResolvedRoamAccount } from "./accounts.js";
-import { handleRoamInbound } from "./inbound.js";
+import { __resetNotAllowlistedNoticeForTests, handleRoamInbound } from "./inbound.js";
 import type { CoreConfig, RoamInboundMessage } from "./types.js";
 
 // --- Hoisted mocks ---
@@ -342,6 +342,128 @@ describe("handleRoamInbound", () => {
       expect(defaultRuntime.log).toHaveBeenCalledWith(
         expect.stringContaining("not allowlisted"),
       );
+    });
+  });
+
+  describe("not-allowlisted courtesy notice", () => {
+    beforeEach(() => {
+      __resetNotAllowlistedNoticeForTests();
+      mockSendMessageRoam.mockClear();
+    });
+
+    function mockAllowlistDrop(times: number): void {
+      // mockReturnValueOnce so the override doesn't leak to other tests.
+      // Call `times` records so a single test can fire handleRoamInbound
+      // multiple times under the same policy.
+      for (let i = 0; i < times; i++) {
+        mockResolveAllowlistProviderRuntimeGroupPolicy.mockReturnValueOnce({
+          groupPolicy: "allowlist",
+          providerMissingFallbackApplied: false,
+        });
+        mockResolveRoamGroupMatch.mockReturnValueOnce({
+          groupConfig: undefined,
+          wildcardConfig: undefined,
+          groupKey: undefined,
+          matchSource: undefined,
+          allowed: false,
+          allowlistConfigured: true,
+        });
+      }
+    }
+
+    it("posts a one-time notice when the bot is @-mentioned in an unlisted group", async () => {
+      mockAllowlistDrop(1);
+
+      await handleRoamInbound({
+        message: makeMessage({
+          chatType: "group",
+          chatId: "fresh-group",
+          text: "<@bot-uuid> ping",
+        }),
+        account: makeAccount({ accountId: "org" }),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+
+      expect(mockSendMessageRoam).toHaveBeenCalledTimes(1);
+      const [target, text, opts] = mockSendMessageRoam.mock.calls[0];
+      expect(target).toBe("fresh-group");
+      expect(text).toContain("isn't on my allowlist");
+      expect(text).toContain("`org`");
+      expect(text).toContain("`fresh-group`");
+      expect(opts).toMatchObject({ accountId: "org" });
+      expect(mockDispatchInboundReplyWithBase).not.toHaveBeenCalled();
+    });
+
+    it("does not re-post on subsequent mentions in the same chat", async () => {
+      mockAllowlistDrop(2);
+
+      const args = {
+        account: makeAccount({ accountId: "org" }),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      } as const;
+
+      await handleRoamInbound({
+        ...args,
+        message: makeMessage({
+          chatType: "group",
+          chatId: "fresh-group",
+          text: "<@bot-uuid> ping",
+        }),
+      });
+      await handleRoamInbound({
+        ...args,
+        message: makeMessage({
+          chatType: "group",
+          chatId: "fresh-group",
+          text: "<@bot-uuid> still here?",
+        }),
+      });
+
+      expect(mockSendMessageRoam).toHaveBeenCalledTimes(1);
+    });
+
+    it("stays silent for non-mention chatter in an unlisted group", async () => {
+      mockAllowlistDrop(1);
+
+      await handleRoamInbound({
+        message: makeMessage({
+          chatType: "group",
+          chatId: "fresh-group",
+          text: "hello team, no bot here",
+        }),
+        account: makeAccount({ accountId: "org" }),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+
+      expect(mockSendMessageRoam).not.toHaveBeenCalled();
+      expect(mockDispatchInboundReplyWithBase).not.toHaveBeenCalled();
+    });
+
+    it("replies in-thread when the mention came in a thread", async () => {
+      mockAllowlistDrop(1);
+
+      await handleRoamInbound({
+        message: makeMessage({
+          chatType: "group",
+          chatId: "fresh-group",
+          text: "<@bot-uuid> ping",
+          threadTimestamp: 1700000000000001,
+        }),
+        account: makeAccount({ accountId: "org" }),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+
+      expect(mockSendMessageRoam).toHaveBeenCalledTimes(1);
+      const opts = mockSendMessageRoam.mock.calls[0][2];
+      expect(opts).toMatchObject({ threadTimestamp: 1700000000000001 });
     });
   });
 

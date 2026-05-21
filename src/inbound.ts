@@ -83,6 +83,40 @@ export function __resetHistoryFetchMemoForTests(): void {
   historyFetchMemo.clear();
 }
 
+/**
+ * Track which `(accountId, chatId)` pairs have already received the
+ * "not-allowlisted" courtesy notice this process. The notice fires at most
+ * once per chat per restart to avoid spam if the operator doesn't update
+ * config immediately. Bounded with full-clear eviction (best-effort; insertion
+ * order isn't tracked).
+ */
+const NOT_ALLOWLISTED_NOTICE_MAX = 1000;
+const notAllowlistedNoticeSent = new Set<string>();
+
+function shouldSendNotAllowlistedNotice(scopeKey: string): boolean {
+  if (notAllowlistedNoticeSent.has(scopeKey)) return false;
+  if (notAllowlistedNoticeSent.size >= NOT_ALLOWLISTED_NOTICE_MAX) {
+    notAllowlistedNoticeSent.clear();
+  }
+  notAllowlistedNoticeSent.add(scopeKey);
+  return true;
+}
+
+/** Test-only: clear the per-process not-allowlisted notice memoization. */
+export function __resetNotAllowlistedNoticeForTests(): void {
+  notAllowlistedNoticeSent.clear();
+}
+
+function buildNotAllowlistedNotice(params: { accountId: string; chatId: string }): string {
+  return [
+    `Hi — I see your message, but this group isn't on my allowlist for the \`${params.accountId}\` account, so I can't reply yet.`,
+    ``,
+    `To enable me here, either:`,
+    `• Set my \`groupPolicy\` to \`"open"\` (allow any group I'm added to), or`,
+    `• Add this group to the allowlist. This chat's id is \`${params.chatId}\`.`,
+  ].join("\n");
+}
+
 /** Strip Roam mention syntax for the bot's own user ID. */
 function stripBotMention(text: string, botId?: string): string {
   if (botId) {
@@ -254,6 +288,29 @@ export async function handleRoamInbound(params: {
   // implicitly lock out every other group, which has burned users adding the
   // bot to a fresh group.
   if (isGroup && groupPolicy === "allowlist" && !groupMatch.allowed) {
+    // If the operator has explicitly opted into allowlist mode and the bot is
+    // @-mentioned in a group it doesn't yet know about, post a one-time
+    // courtesy reply explaining how to enable it. Mirrors the DM-pairing UX:
+    // silence is fine for incidental traffic, but a direct mention is a clear
+    // signal of user intent that the bot should respond to.
+    const rawTextForMention = message.text?.trim() ?? "";
+    if (
+      wasBotMentioned(rawTextForMention, botId) &&
+      shouldSendNotAllowlistedNotice(`${account.accountId}:${chatId}`)
+    ) {
+      await sendMessageRoam(
+        chatId,
+        buildNotAllowlistedNotice({ accountId: account.accountId, chatId }),
+        {
+          accountId: account.accountId,
+          threadTimestamp: message.threadTimestamp,
+        },
+      ).catch((err) => {
+        runtime.error?.(
+          `roam[${account.accountId}]: failed to post not-allowlisted notice for chat ${chatId}: ${String(err)}`,
+        );
+      });
+    }
     runtime.log?.(`roam[${account.accountId}]: drop chat ${chatId} (not allowlisted)`);
     return;
   }
