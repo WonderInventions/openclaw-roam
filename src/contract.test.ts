@@ -76,10 +76,12 @@ vi.mock("../runtime-api.js", async () => {
       shouldBlockControlCommand: false,
       effectiveGroupAllowFrom: undefined,
     })),
-    resolveAllowlistProviderRuntimeGroupPolicy: vi.fn(() => ({
-      groupPolicy: "open",
-      providerMissingFallbackApplied: false,
-    })),
+    resolveAllowlistProviderRuntimeGroupPolicy: vi.fn(
+      (params: { groupPolicy?: string }) => ({
+        groupPolicy: params.groupPolicy ?? "open",
+        providerMissingFallbackApplied: false,
+      }),
+    ),
     resolveDefaultGroupPolicy: vi.fn(() => "open"),
     readStoreAllowFromForDmPolicy: vi.fn().mockResolvedValue([]),
   };
@@ -353,6 +355,10 @@ function buildInbound(fixture: Fixture, ph: Placeholders): RoamInboundMessage {
 
 function buildAccount(fixture: Fixture, ph: Placeholders): ResolvedRoamAccount {
   const groups: Record<string, { requireMention?: boolean }> = {};
+  // Default: `groupPolicy: open`. The `groups` map under `open` provides
+  // per-group overrides (e.g. requireMention) without acting as an allowlist —
+  // adding the bot to a fresh group must not require pre-configuring it.
+  let groupPolicy: "open" | "allowlist" = "open";
   switch (fixture.name) {
     case "group_mention_top_level":
     case "group_mention_threaded":
@@ -361,7 +367,9 @@ function buildAccount(fixture: Fixture, ph: Placeholders): ResolvedRoamAccount {
       groups[ph["chat.id"]] = { requireMention: true };
       break;
     case "group_not_allowlisted":
-      // Allowlist a different chat so the inbound chat.id is NOT matched.
+      // Operator has explicitly opted into `allowlist` mode and listed a
+      // different chat; this group is therefore dropped.
+      groupPolicy = "allowlist";
       groups["chat-some-other-allowlisted-chat"] = {};
       break;
     default:
@@ -374,6 +382,7 @@ function buildAccount(fixture: Fixture, ph: Placeholders): ResolvedRoamAccount {
     apiKeySource: "config",
     config: {
       dmPolicy: "open",
+      groupPolicy,
       historyLimit: 20,
       streaming: { mode: "off" },
       groups: Object.keys(groups).length > 0 ? groups : undefined,

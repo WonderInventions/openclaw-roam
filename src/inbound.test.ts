@@ -25,6 +25,7 @@ const {
   mockWarnMissingProviderGroupPolicyFallbackOnce,
   mockResolveRoamGroupSystemPrompt,
   mockFetchRoamChatHistory,
+  mockResolveRoamGroupMatch,
 } = vi.hoisted(() => ({
   mockSendMessageRoam: vi.fn().mockResolvedValue({ chatId: "chat-1", timestamp: 1000 }),
   mockSendTypingRoam: vi.fn().mockResolvedValue(undefined),
@@ -59,6 +60,14 @@ const {
   mockWarnMissingProviderGroupPolicyFallbackOnce: vi.fn(),
   mockResolveRoamGroupSystemPrompt: vi.fn<() => string | undefined>(() => undefined),
   mockFetchRoamChatHistory: vi.fn().mockResolvedValue([]),
+  mockResolveRoamGroupMatch: vi.fn(() => ({
+    groupConfig: undefined,
+    wildcardConfig: undefined,
+    groupKey: undefined,
+    matchSource: undefined,
+    allowed: true,
+    allowlistConfigured: false,
+  })),
 }));
 
 mockCreateRoamLiveMessageTrack.mockImplementation(() => mockLiveMessageTrack);
@@ -177,14 +186,7 @@ vi.mock("../runtime-api.js", async () => {
 vi.mock("./policy.js", () => ({
   normalizeRoamAllowlist: vi.fn((v: unknown) => v ?? []),
   resolveRoamAllowlistMatch: vi.fn(() => ({ allowed: true })),
-  resolveRoamGroupMatch: vi.fn(() => ({
-    groupConfig: undefined,
-    wildcardConfig: undefined,
-    groupKey: undefined,
-    matchSource: undefined,
-    allowed: true,
-    allowlistConfigured: false,
-  })),
+  resolveRoamGroupMatch: mockResolveRoamGroupMatch,
   resolveRoamGroupAllow: vi.fn(() => ({ allowed: true })),
   resolveRoamGroupSystemPrompt: mockResolveRoamGroupSystemPrompt,
   resolveRoamRequireMention: vi.fn(() => false),
@@ -279,6 +281,67 @@ describe("handleRoamInbound", () => {
       });
 
       expect(mockDispatchInboundReplyWithBase).toHaveBeenCalled();
+    });
+  });
+
+  describe("group allowlist gate honors groupPolicy", () => {
+    // The per-group `groups` map's allowed=false only gates traffic in
+    // `allowlist` mode. Under `open`, listed entries are overrides — they
+    // must not lock out the bot from groups it hasn't been configured for.
+    it("dispatches a non-matching group under groupPolicy=open", async () => {
+      mockResolveAllowlistProviderRuntimeGroupPolicy.mockReturnValueOnce({
+        groupPolicy: "open",
+        providerMissingFallbackApplied: false,
+      });
+      mockResolveRoamGroupMatch.mockReturnValueOnce({
+        groupConfig: undefined,
+        wildcardConfig: undefined,
+        groupKey: undefined,
+        matchSource: undefined,
+        allowed: false,
+        allowlistConfigured: true,
+      });
+
+      await handleRoamInbound({
+        message: makeMessage({ chatType: "group", chatId: "fresh-group" }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+
+      expect(mockDispatchInboundReplyWithBase).toHaveBeenCalled();
+      expect(defaultRuntime.log).not.toHaveBeenCalledWith(
+        expect.stringContaining("not allowlisted"),
+      );
+    });
+
+    it("drops a non-matching group under groupPolicy=allowlist", async () => {
+      mockResolveAllowlistProviderRuntimeGroupPolicy.mockReturnValueOnce({
+        groupPolicy: "allowlist",
+        providerMissingFallbackApplied: false,
+      });
+      mockResolveRoamGroupMatch.mockReturnValueOnce({
+        groupConfig: undefined,
+        wildcardConfig: undefined,
+        groupKey: undefined,
+        matchSource: undefined,
+        allowed: false,
+        allowlistConfigured: true,
+      });
+
+      await handleRoamInbound({
+        message: makeMessage({ chatType: "group", chatId: "fresh-group" }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+
+      expect(mockDispatchInboundReplyWithBase).not.toHaveBeenCalled();
+      expect(defaultRuntime.log).toHaveBeenCalledWith(
+        expect.stringContaining("not allowlisted"),
+      );
     });
   });
 

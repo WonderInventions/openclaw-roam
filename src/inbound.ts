@@ -248,7 +248,12 @@ export async function handleRoamInbound(params: {
     chatId,
   });
   const groupConfig = groupMatch.groupConfig;
-  if (isGroup && !groupMatch.allowed) {
+  // The per-group `groups` map gates chats only in `allowlist` policy mode.
+  // Under `open`, listed entries are optional overrides (system prompt, mention
+  // requirement, etc.), not an allowlist — otherwise adding one entry would
+  // implicitly lock out every other group, which has burned users adding the
+  // bot to a fresh group.
+  if (isGroup && groupPolicy === "allowlist" && !groupMatch.allowed) {
     runtime.log?.(`roam[${account.accountId}]: drop chat ${chatId} (not allowlisted)`);
     return;
   }
