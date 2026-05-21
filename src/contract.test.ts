@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeEnv } from "../runtime-api.js";
 import type { ResolvedRoamAccount } from "./accounts.js";
-import { handleRoamInbound } from "./inbound.js";
+import { __resetHistoryFetchMemoForTests, handleRoamInbound } from "./inbound.js";
 import { webhookEventToInbound } from "./monitor.js";
 import type { CoreConfig, RoamInboundMessage, RoamWebhookEvent } from "./types.js";
 
@@ -547,6 +547,7 @@ const fixtures = loadFixtures();
 describe.each(fixtures)("openclaw contract: $name", (fixture: Fixture) => {
   beforeEach(() => {
     captured.length = 0;
+    __resetHistoryFetchMemoForTests();
     mockFetchWithSsrFGuard.mockReset();
     installCapturingFetch();
     mockDispatchInboundReplyWithBase.mockReset();
