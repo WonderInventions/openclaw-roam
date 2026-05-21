@@ -1,6 +1,6 @@
 {
   "name": "group_not_allowlisted",
-  "summary": "Alice @-mentions the bot in a group the plugin operator hasn't allowlisted on the plugin side. From Roam's perspective the webhook still delivers; the plugin no-ops. expectedApiCalls is empty.",
+  "summary": "Operator has explicitly opted into `groupPolicy: allowlist` and listed a different chat. Alice @-mentions the bot in this (non-allowlisted) group. From Roam's perspective the webhook still delivers; the plugin no-ops. expectedApiCalls is empty.",
 
   "setup": {
     "actor": "alice",
