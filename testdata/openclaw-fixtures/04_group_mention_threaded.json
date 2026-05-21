@@ -32,7 +32,16 @@
       "body": { "chatId": "<chat.id>", "threadTimestamp": "<thread.parentTs>" }
     },
     {
-      "name": "fetch thread history",
+      "name": "fetch top-level history (so the agent sees the parent message; threadTimestamp= scopes to replies of the parent and omits the parent itself)",
+      "method": "GET",
+      "path": "/v1/chat.history",
+      "query": {
+        "chatId": "<chat.id>",
+        "limit": "20"
+      }
+    },
+    {
+      "name": "fetch thread replies (sibling messages in the same thread)",
       "method": "GET",
       "path": "/v1/chat.history",
       "query": {

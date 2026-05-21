@@ -43,6 +43,46 @@ import type { CoreConfig, RoamInboundMessage } from "./types.js";
 
 const CHANNEL_ID = "roam" as const;
 
+/**
+ * Per-process record of which (sessionKey, history-scope) combinations the
+ * plugin has already fetched chat.history for. We fetch the prior chat /
+ * thread context the FIRST time a session encounters a given scope (either
+ * "top" for top-level conversations or `thread:<microsecondTs>` for a
+ * specific thread), then skip on subsequent turns — the session itself
+ * accumulates each turn's user message + agent reply, so re-fetching the
+ * same history every turn would just duplicate context the agent already has
+ * and burn tokens N² as threads grow.
+ *
+ * Restart loses the cache; a single re-fetch on the first inbound after
+ * restart restores the bot's view of pre-restart context. Bounded to
+ * HISTORY_FETCH_MEMO_MAX entries with FIFO eviction so a long-running bot
+ * in many chats doesn't accumulate unboundedly.
+ */
+const HISTORY_FETCH_MEMO_MAX = 1000;
+const historyFetchMemo = new Map<string, Set<string>>();
+
+function hasFetchedHistoryFor(sessionKey: string, scope: string): boolean {
+  return historyFetchMemo.get(sessionKey)?.has(scope) ?? false;
+}
+
+function recordHistoryFetched(sessionKey: string, scope: string): void {
+  let scopes = historyFetchMemo.get(sessionKey);
+  if (!scopes) {
+    if (historyFetchMemo.size >= HISTORY_FETCH_MEMO_MAX) {
+      const oldest = historyFetchMemo.keys().next().value;
+      if (oldest !== undefined) historyFetchMemo.delete(oldest);
+    }
+    scopes = new Set();
+    historyFetchMemo.set(sessionKey, scopes);
+  }
+  scopes.add(scope);
+}
+
+/** Test-only: clear the per-process history-fetch memoization. */
+export function __resetHistoryFetchMemoForTests(): void {
+  historyFetchMemo.clear();
+}
+
 /** Strip Roam mention syntax for the bot's own user ID. */
 function stripBotMention(text: string, botId?: string): string {
   if (botId) {
@@ -392,36 +432,87 @@ export async function handleRoamInbound(params: {
         : undefined;
 
   // Pre-fetch chat history for groups so the agent sees context it would
-  // otherwise have missed: in `requireMention: true` groups the plugin drops
-  // non-mention messages, and in threaded mentions the parent + sibling
-  // replies were never delivered to the agent. DMs are intentionally
-  // skipped — the openclaw session for `roam:<senderId>` already records
-  // every inbound + outbound on that DM (the bot is always a participant),
-  // so a chat.history fetch would be redundant. Bounded by historyLimit
-  // (default 20, server max 200). 0 disables.
+  // otherwise have missed. DMs are intentionally skipped — the openclaw
+  // session for `roam:<senderId>` already records every inbound + outbound
+  // (the bot is always a participant), so chat.history is redundant.
+  //
+  // We fetch two pages in parallel and merge them:
+  //   1. Top-level chat history (no threadTimestamp) — gives the parent
+  //      that started the thread plus surrounding top-level context. The
+  //      v1 `chat.history?threadTimestamp=X` endpoint returns only the
+  //      REPLIES of message X (not X itself), so without this fetch the
+  //      agent has no record of the message it's replying to.
+  //   2. Thread replies (with threadTimestamp) — sibling messages in the
+  //      same thread when there are several. Often empty on the first
+  //      reply, which is exactly the case where the top-level fetch saves us.
+  //
+  // Memoization gate (only safe when the bot sees every message in the
+  // chat): proactive bots configured with `requireMention: false` receive a
+  // webhook for every message and the session records continuous coverage,
+  // so we only need to fetch chat.history on the FIRST turn for each
+  // (session, scope) — after that, re-fetching would just duplicate
+  // context the agent already has and burn tokens N² as threads grow.
+  //
+  // For the mention-only case (`requireMention: true`, the typical PAT-bot
+  // shape — bot can't be a channel member and only sees @-mentions),
+  // ALWAYS fetch: any number of messages may have been posted between
+  // the bot's prior mention and now, and none of them were dispatched to
+  // the agent, so the session has gaps the memo would mask.
+  //
+  // Bounded by historyLimit (default 20, server max 200). 0 disables.
   const historyLimit = account.config.historyLimit ?? 20;
-  let threadHistory: RoamHistoryMessage[] = [];
-  if (isGroup && historyLimit > 0) {
-    threadHistory = await fetchRoamChatHistory({
-      cfg: config,
-      accountId: account.accountId,
-      apiKey: account.apiKey,
-      apiBaseUrl: account.config.apiBaseUrl,
-      chatId,
-      threadTimestamp,
-      limit: historyLimit,
-    }).catch((err) => {
-      runtime.error?.(
-        `roam[${account.accountId}]: chat.history failed for chat ${chatId} thread=${threadTimestamp ?? "-"}: ${String(err)}`,
+  const historyScope = threadTimestamp !== undefined ? `thread:${threadTimestamp}` : "top";
+  const historyMemoKey = route.sessionKey ?? `chat:${chatId}`;
+  // shouldRequireMention is true only for groups; for DMs we exit before reaching here.
+  const canMemoizeHistory = isGroup && !shouldRequireMention;
+  const shouldFetchHistory =
+    isGroup &&
+    historyLimit > 0 &&
+    (!canMemoizeHistory || !hasFetchedHistoryFor(historyMemoKey, historyScope));
+  const historyFetchCfg = {
+    cfg: config,
+    accountId: account.accountId,
+    apiKey: account.apiKey,
+    apiBaseUrl: account.config.apiBaseUrl,
+    chatId,
+    limit: historyLimit,
+  } as const;
+  const fetches: Array<Promise<RoamHistoryMessage[]>> = [];
+  if (shouldFetchHistory) {
+    fetches.push(
+      fetchRoamChatHistory(historyFetchCfg).catch((err) => {
+        runtime.error?.(
+          `roam[${account.accountId}]: chat.history (top-level) failed for chat ${chatId}: ${String(err)}`,
+        );
+        return [];
+      }),
+    );
+    if (threadTimestamp !== undefined) {
+      fetches.push(
+        fetchRoamChatHistory({ ...historyFetchCfg, threadTimestamp }).catch((err) => {
+          runtime.error?.(
+            `roam[${account.accountId}]: chat.history (thread=${threadTimestamp}) failed for chat ${chatId}: ${String(err)}`,
+          );
+          return [];
+        }),
       );
-      return [];
-    });
+    }
+    if (canMemoizeHistory) {
+      recordHistoryFetched(historyMemoKey, historyScope);
+    }
   }
-  // Filter out the inbound itself (already delivered to the agent as Body) so
-  // we don't double-include it. Sort ascending so the model sees chronological
-  // order.
-  const inboundHistory = threadHistory
-    .filter((entry) => entry.timestamp !== message.timestamp * 1000)
+  const fetched = (await Promise.all(fetches)).flat();
+  // Dedupe by microsecond timestamp (a message that appears in both fetches
+  // — e.g. the parent surfaced in the top-level page AND echoed in the thread
+  // page — should only be delivered to the agent once). Filter out the
+  // inbound itself (already delivered as Body). Sort ascending so the agent
+  // reads chronologically.
+  const byTimestamp = new Map<number, RoamHistoryMessage>();
+  for (const entry of fetched) {
+    if (entry.timestamp === message.timestamp * 1000) continue;
+    byTimestamp.set(entry.timestamp, entry);
+  }
+  const inboundHistory = [...byTimestamp.values()]
     .sort((a, b) => a.timestamp - b.timestamp)
     .map((entry) => ({
       sender: entry.sender,
@@ -592,6 +683,17 @@ export async function handleRoamInbound(params: {
         runtime.error?.(`roam[${account.accountId}] ${info.kind} reply failed: ${String(err)}`);
       },
       replyOptions: {
+        // Roam is a direct-reply channel: the agent's assistant text is the
+        // user-facing reply, not a side-channel that needs an explicit
+        // `message.send` tool call to be visible. Without this, the host's
+        // default for group chats — `sourceReplyDeliveryMode: "message_tool_only"`
+        // when `messages.groupChat.visibleReplies` is anything other than
+        // "automatic" — silently suppresses replies in groups: the agent
+        // produces text in its session log, the dispatcher hits the
+        // `suppressDelivery` branch, and our `deliver` callback is never
+        // invoked. Force "automatic" so Roam group replies always reach the
+        // channel regardless of the host-level visibleReplies preference.
+        sourceReplyDeliveryMode: "automatic",
         skillFilter: groupConfig?.skills,
         disableBlockStreaming: useStreaming
           ? true

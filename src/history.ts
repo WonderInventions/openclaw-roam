@@ -70,21 +70,26 @@ export async function fetchRoamChatHistory(
       );
       return [];
     }
+    // The deployed v1 API returns message-sender as `userId` even though the
+    // OpenAPI draft schema calls it `sender`. Accept either form so we're not
+    // brittle to that drift.
     const data = (await response.json()) as {
       messages?: Array<{
         sender?: string;
+        userId?: string;
         text?: string;
         timestamp?: number;
         threadTimestamp?: number;
       }>;
     };
     const messages = (data.messages ?? []).flatMap<RoamHistoryMessage>((m) => {
-      if (typeof m.sender !== "string" || typeof m.timestamp !== "number") {
+      const senderId = typeof m.sender === "string" ? m.sender : m.userId;
+      if (typeof senderId !== "string" || typeof m.timestamp !== "number") {
         return [];
       }
       return [
         {
-          sender: m.sender,
+          sender: senderId,
           text: typeof m.text === "string" ? m.text : undefined,
           timestamp: m.timestamp,
           threadTimestamp: typeof m.threadTimestamp === "number" ? m.threadTimestamp : undefined,
