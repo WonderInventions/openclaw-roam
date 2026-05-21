@@ -203,7 +203,7 @@ function makeMessage(overrides?: Partial<RoamInboundMessage>): RoamInboundMessag
     senderId: "user-1",
     senderName: "Alice",
     text: "hello bot",
-    timestamp: Date.now(),
+    timestampMicros: Date.now() * 1000,
     chatType: "direct",
     ...overrides,
   };
@@ -870,17 +870,17 @@ describe("handleRoamInbound", () => {
 
     it("calls statusSink on inbound", async () => {
       const statusSink = vi.fn();
-      const ts = Date.now();
+      const tsMs = Date.now();
 
       await handleRoamInbound({
-        message: makeMessage({ timestamp: ts }),
+        message: makeMessage({ timestampMicros: tsMs * 1000 }),
         account: makeAccount(),
         config: defaultConfig,
         runtime: defaultRuntime,
         statusSink,
       });
 
-      expect(statusSink).toHaveBeenCalledWith({ lastInboundAt: ts });
+      expect(statusSink).toHaveBeenCalledWith({ lastInboundAt: tsMs });
     });
 
     it("uses the live-message draft track for answer streaming", async () => {

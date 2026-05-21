@@ -1,6 +1,10 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { monitorRoamProvider, verifyStandardWebhookSignature } from "./monitor.js";
+import {
+  monitorRoamProvider,
+  verifyStandardWebhookSignature,
+  webhookEventToInbound,
+} from "./monitor.js";
 import type { CoreConfig } from "./types.js";
 
 const { mockResolveRoamAccount, mockResolveLoggerBackedRuntime } = vi.hoisted(() => ({
@@ -371,6 +375,33 @@ describe("monitorRoamProvider", () => {
     );
     expect(subscribeCall).toBeDefined();
     expect(subscribeCall![0]).toBe("https://api.account.dev/v1/webhook.subscribe");
+  });
+});
+
+describe("webhookEventToInbound", () => {
+  // Roam timestamps are microsecond-precision and Roam indexes messages by
+  // the exact µs value. The plugin must carry the raw µs through unchanged
+  // so a downstream `chat.post` with `threadTimestamp = msg.timestampMicros`
+  // matches an actual message id. Multiplying ms back to µs (the older
+  // shortcut) silently loses the remainder and Roam returns 400
+  // "threadTimestamp X is not an existing message".
+  it("preserves microsecond precision in timestampMicros", () => {
+    const inbound = webhookEventToInbound({
+      type: "message",
+      contentType: "text",
+      userId: "user-1",
+      chatId: "chat-1",
+      text: "hello",
+      timestamp: 1779380025366001, // µs with non-zero remainder
+      chatType: "group",
+    });
+    expect(inbound.timestampMicros).toBe(1779380025366001);
+    // The inbound message carries ONLY the µs identifier. Consumers that need ms
+    // convert at the boundary with Math.floor(timestampMicros / 1000); the lossy
+    // form is never stored on the message itself.
+    expect(Math.floor(inbound.timestampMicros / 1000) * 1000).not.toBe(
+      inbound.timestampMicros,
+    );
   });
 });
 

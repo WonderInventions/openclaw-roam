@@ -167,7 +167,20 @@ export type RoamInboundMessage = {
   senderId: string;
   senderName: string;
   text: string;
-  timestamp: number;
+  /**
+   * Microseconds since epoch — the raw webhook value, preserved without rounding.
+   *
+   * This is the **identifier** Roam uses to index messages, and the only timestamp
+   * field carried on the inbound message. Treat it as immutable.
+   *
+   * Consumers that need a `Date.now()`-style millisecond value (agent ctxPayload
+   * `Timestamp`, host status sinks, activity records) convert at the boundary
+   * with `Math.floor(message.timestampMicros / 1000)`. Doing the conversion at
+   * the call site keeps the unit explicit and prevents the previous bug where
+   * an ms value was multiplied back to µs, losing precision and producing a
+   * thread-parent timestamp Roam did not recognize.
+   */
+  timestampMicros: number;
   chatType: "direct" | "group";
   /** Microsecond-precision parent-message timestamp when the inbound is in a Roam thread. */
   threadTimestamp?: number;

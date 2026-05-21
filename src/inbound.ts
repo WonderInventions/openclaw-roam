@@ -248,7 +248,9 @@ export async function handleRoamInbound(params: {
   const senderId = message.senderId;
   const senderName = message.senderName;
 
-  statusSink?.({ lastInboundAt: message.timestamp });
+  // `lastInboundAt` is a Date.now()-style ms field; convert from the µs identifier.
+  const messageTimestampMs = Math.floor(message.timestampMicros / 1000);
+  statusSink?.({ lastInboundAt: messageTimestampMs });
 
   const dmPolicy = account.config.dmPolicy ?? "pairing";
   const defaultGroupPolicy = resolveDefaultGroupPolicy(config as OpenClawConfig);
@@ -459,7 +461,7 @@ export async function handleRoamInbound(params: {
   const body = core.channel.reply.formatAgentEnvelope({
     channel: "Roam",
     from: fromLabel,
-    timestamp: message.timestamp,
+    timestamp: messageTimestampMs,
     previousTimestamp,
     envelope: envelopeOptions,
     body: bodyForAgent || rawBody,
@@ -490,7 +492,7 @@ export async function handleRoamInbound(params: {
     : message.threadTimestamp !== undefined
       ? message.threadTimestamp
       : replyInThread
-        ? message.timestamp * 1000
+        ? message.timestampMicros
         : undefined;
 
   // Pre-fetch chat history for groups so the agent sees context it would
@@ -571,7 +573,7 @@ export async function handleRoamInbound(params: {
   // reads chronologically.
   const byTimestamp = new Map<number, RoamHistoryMessage>();
   for (const entry of fetched) {
-    if (entry.timestamp === message.timestamp * 1000) continue;
+    if (entry.timestamp === message.timestampMicros) continue;
     byTimestamp.set(entry.timestamp, entry);
   }
   const inboundHistory = [...byTimestamp.values()]
@@ -618,7 +620,7 @@ export async function handleRoamInbound(params: {
     Surface: CHANNEL_ID,
     WasMentioned: isGroup ? wasMentioned : undefined,
     MessageSid: message.messageId,
-    Timestamp: message.timestamp,
+    Timestamp: messageTimestampMs,
     OriginatingChannel: CHANNEL_ID,
     OriginatingTo: `roam:${chatId}`,
     CommandAuthorized: commandAuthorized,

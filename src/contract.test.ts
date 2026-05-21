@@ -346,7 +346,7 @@ function buildInbound(fixture: Fixture, ph: Placeholders): RoamInboundMessage {
       senderId: ph["bot.addrId"],
       senderName: "",
       text: "bot-initiated note",
-      timestamp: Date.now(),
+      timestampMicros: Date.now() * 1000,
       chatType: "direct",
     };
   }
