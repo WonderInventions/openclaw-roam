@@ -490,7 +490,7 @@ export async function handleRoamInbound(params: {
     : message.threadTimestamp !== undefined
       ? message.threadTimestamp
       : replyInThread
-        ? message.timestamp * 1000
+        ? message.timestampMicros
         : undefined;
 
   // Pre-fetch chat history for groups so the agent sees context it would
@@ -571,7 +571,7 @@ export async function handleRoamInbound(params: {
   // reads chronologically.
   const byTimestamp = new Map<number, RoamHistoryMessage>();
   for (const entry of fetched) {
-    if (entry.timestamp === message.timestamp * 1000) continue;
+    if (entry.timestamp === message.timestampMicros) continue;
     byTimestamp.set(entry.timestamp, entry);
   }
   const inboundHistory = [...byTimestamp.values()]

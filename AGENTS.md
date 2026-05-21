@@ -184,8 +184,14 @@ Don't add Roam-internal-only behaviors to fixtures — those belong in
 - **`threadKey` is dead.** Earlier code used a string `threadKey`; the deployed
   API uses microsecond `threadTimestamp` and the two are mutually exclusive.
   Don't reintroduce `threadKey`.
-- **Microseconds vs milliseconds.** Webhook normalization converts incoming
-  `timestamp` to ms; everything thread-related stays in µs. Mixing them
+- **Microseconds vs milliseconds.** Webhook normalization carries both forms
+  on `RoamInboundMessage`: `timestamp` (ms, lossy — for ctxPayload + activity
+  records) and `timestampMicros` (µs, exact — preserved from the raw webhook).
+  Anything that round-trips through a Roam API call (`chat.post` with
+  `threadTimestamp`, `chat.history` thread queries, etc.) MUST use
+  `timestampMicros`. `message.timestamp * 1000` looks correct but loses the
+  µs remainder, and Roam indexes by exact µs — the post will 400 with
+  "threadTimestamp X is not an existing message". Mixing units the other way
   silently produces threads in the year 53890 or chats from 1970.
 
 ## Releasing

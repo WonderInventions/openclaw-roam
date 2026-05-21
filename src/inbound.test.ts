@@ -197,13 +197,15 @@ vi.mock("./policy.js", () => ({
 // --- Helpers ---
 
 function makeMessage(overrides?: Partial<RoamInboundMessage>): RoamInboundMessage {
+  const timestamp = Date.now();
   return {
     messageId: "msg-1",
     chatId: "chat-1",
     senderId: "user-1",
     senderName: "Alice",
     text: "hello bot",
-    timestamp: Date.now(),
+    timestamp,
+    timestampMicros: timestamp * 1000,
     chatType: "direct",
     ...overrides,
   };

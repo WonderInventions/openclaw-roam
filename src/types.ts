@@ -167,7 +167,15 @@ export type RoamInboundMessage = {
   senderId: string;
   senderName: string;
   text: string;
+  /** Milliseconds since epoch (the lossy form). Used in agent ctxPayload + activity records. */
   timestamp: number;
+  /**
+   * Microseconds since epoch — the raw webhook value, preserved without rounding.
+   * Roam indexes messages by exact microsecond timestamp; use this (NOT `timestamp * 1000`)
+   * wherever the value must round-trip through a Roam API call (e.g. `chat.post` with
+   * `threadTimestamp` to start a new thread under this message).
+   */
+  timestampMicros: number;
   chatType: "direct" | "group";
   /** Microsecond-precision parent-message timestamp when the inbound is in a Roam thread. */
   threadTimestamp?: number;

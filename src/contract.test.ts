@@ -340,13 +340,15 @@ function buildInbound(fixture: Fixture, ph: Placeholders): RoamInboundMessage {
   // but the plugin's defense-in-depth check (sender == bot) should still
   // drop. Synthesize a minimal inbound where senderId == bot.addrId.
   if (fixture.webhook.expectMissing) {
+    const timestamp = Date.now();
     return {
       messageId: "self-echo-msg",
       chatId: ph["chat.id"],
       senderId: ph["bot.addrId"],
       senderName: "",
       text: "bot-initiated note",
-      timestamp: Date.now(),
+      timestamp,
+      timestampMicros: timestamp * 1000,
       chatType: "direct",
     };
   }
