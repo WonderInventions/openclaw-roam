@@ -399,29 +399,59 @@ export async function handleRoamInbound(params: {
   // every inbound + outbound on that DM (the bot is always a participant),
   // so a chat.history fetch would be redundant. Bounded by historyLimit
   // (default 20, server max 200). 0 disables.
+  //
+  // We fetch two pages in parallel and merge them:
+  //   1. Top-level chat history (no threadTimestamp) — gives the parent
+  //      message that started the thread plus surrounding top-level context.
+  //      The v1 `chat.history?threadTimestamp=X` endpoint returns only the
+  //      REPLIES of message X (not X itself), so without this fetch the
+  //      agent has no record of the message it's actually replying to.
+  //   2. Thread replies (with threadTimestamp) — gives the other replies
+  //      in the same thread when there are several. Often empty on the
+  //      first reply, which is exactly the case where the top-level fetch
+  //      saves us.
   const historyLimit = account.config.historyLimit ?? 20;
-  let threadHistory: RoamHistoryMessage[] = [];
+  const historyFetchCfg = {
+    cfg: config,
+    accountId: account.accountId,
+    apiKey: account.apiKey,
+    apiBaseUrl: account.config.apiBaseUrl,
+    chatId,
+    limit: historyLimit,
+  } as const;
+  const fetches: Array<Promise<RoamHistoryMessage[]>> = [];
   if (isGroup && historyLimit > 0) {
-    threadHistory = await fetchRoamChatHistory({
-      cfg: config,
-      accountId: account.accountId,
-      apiKey: account.apiKey,
-      apiBaseUrl: account.config.apiBaseUrl,
-      chatId,
-      threadTimestamp,
-      limit: historyLimit,
-    }).catch((err) => {
-      runtime.error?.(
-        `roam[${account.accountId}]: chat.history failed for chat ${chatId} thread=${threadTimestamp ?? "-"}: ${String(err)}`,
+    fetches.push(
+      fetchRoamChatHistory(historyFetchCfg).catch((err) => {
+        runtime.error?.(
+          `roam[${account.accountId}]: chat.history (top-level) failed for chat ${chatId}: ${String(err)}`,
+        );
+        return [];
+      }),
+    );
+    if (threadTimestamp !== undefined) {
+      fetches.push(
+        fetchRoamChatHistory({ ...historyFetchCfg, threadTimestamp }).catch((err) => {
+          runtime.error?.(
+            `roam[${account.accountId}]: chat.history (thread=${threadTimestamp}) failed for chat ${chatId}: ${String(err)}`,
+          );
+          return [];
+        }),
       );
-      return [];
-    });
+    }
   }
-  // Filter out the inbound itself (already delivered to the agent as Body) so
-  // we don't double-include it. Sort ascending so the model sees chronological
-  // order.
-  const inboundHistory = threadHistory
-    .filter((entry) => entry.timestamp !== message.timestamp * 1000)
+  const fetched = (await Promise.all(fetches)).flat();
+  // Dedupe by microsecond timestamp (a message that appears in both fetches
+  // — e.g. the parent surfaced in the top-level page AND echoed in the thread
+  // page — should only be delivered to the agent once). Filter out the
+  // inbound itself (already delivered as Body). Sort ascending so the agent
+  // reads chronologically.
+  const byTimestamp = new Map<number, RoamHistoryMessage>();
+  for (const entry of fetched) {
+    if (entry.timestamp === message.timestamp * 1000) continue;
+    byTimestamp.set(entry.timestamp, entry);
+  }
+  const inboundHistory = [...byTimestamp.values()]
     .sort((a, b) => a.timestamp - b.timestamp)
     .map((entry) => ({
       sender: entry.sender,
