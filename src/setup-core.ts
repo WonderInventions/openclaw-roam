@@ -160,7 +160,7 @@ export const roamDmPolicy: ChannelSetupDmPolicy = createTopLevelChannelDmPolicy(
   channel,
   policyKey: "channels.roam.dmPolicy",
   allowFromKey: "channels.roam.allowFrom",
-  getCurrent: (cfg) => cfg.channels?.roam?.dmPolicy ?? "pairing",
+  getCurrent: (cfg) => cfg.channels?.roam?.dmPolicy ?? "open",
   promptAllowFrom: promptRoamAllowFromForAccount,
 });
 

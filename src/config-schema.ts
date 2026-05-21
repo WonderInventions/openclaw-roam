@@ -1,4 +1,3 @@
-import { requireChannelOpenAllowFrom } from "openclaw/plugin-sdk/extension-shared";
 import { z } from "zod";
 import {
   DmPolicySchema,
@@ -6,7 +5,6 @@ import {
   MarkdownConfigSchema,
   ReplyRuntimeConfigSchemaShape,
   ToolPolicySchema,
-  requireOpenAllowFrom,
 } from "../runtime-api.js";
 import { buildSecretInputSchema } from "./secret-input.js";
 
@@ -37,10 +35,10 @@ export const RoamAccountSchemaBase = z
     markdown: MarkdownConfigSchema,
     apiKey: buildSecretInputSchema().optional(),
     apiKeyFile: z.string().optional(),
-    dmPolicy: DmPolicySchema.optional().default("pairing"),
+    dmPolicy: DmPolicySchema.optional().default("open"),
     allowFrom: z.array(z.string()).optional(),
     groupAllowFrom: z.array(z.string()).optional(),
-    groupPolicy: GroupPolicySchema.optional().default("allowlist"),
+    groupPolicy: GroupPolicySchema.optional().default("open"),
     groups: z.record(z.string(), RoamGroupSchema.optional()).optional(),
     webhookPath: z.string().optional(),
     apiBaseUrl: z.string().optional(),
@@ -51,25 +49,14 @@ export const RoamAccountSchemaBase = z
   })
   .strict();
 
-export const RoamAccountSchema = RoamAccountSchemaBase.superRefine((value, ctx) => {
-  requireChannelOpenAllowFrom({
-    channel: "roam",
-    policy: value.dmPolicy,
-    allowFrom: value.allowFrom,
-    ctx,
-    requireOpenAllowFrom,
-  });
-});
+// Note: the SDK's `requireChannelOpenAllowFrom` guard (which forces
+// `allowFrom: ["*"]` when `dmPolicy: "open"`) is intentionally NOT applied to
+// the Roam channel. Open is now the default surface model — personal bots are
+// owner-locked at the inbound layer (see `handleRoamInbound`), and org bots
+// are deliberately workspace-open with `allowFrom` available as opt-in.
+export const RoamAccountSchema = RoamAccountSchemaBase;
 
 export const RoamConfigSchema = RoamAccountSchemaBase.extend({
   accounts: z.record(z.string(), RoamAccountSchema.optional()).optional(),
   defaultAccount: z.string().optional(),
-}).superRefine((value, ctx) => {
-  requireChannelOpenAllowFrom({
-    channel: "roam",
-    policy: value.dmPolicy,
-    allowFrom: value.allowFrom,
-    ctx,
-    requireOpenAllowFrom,
-  });
 });

@@ -269,7 +269,11 @@ export async function handleRoamInbound(params: {
   const messageTimestampMs = Math.floor(message.timestampMicros / 1000);
   statusSink?.({ lastInboundAt: messageTimestampMs });
 
-  const dmPolicy = account.config.dmPolicy ?? "pairing";
+  // Default is "open" — DMs to a Roam bot are gated by workspace membership
+  // (anyone in the workspace can DM anyone). Personal bots are additionally
+  // owner-locked above; org bots can opt into a hard allowlist via `allowFrom`.
+  // Pairing remains opt-in via `dmPolicy: "pairing"`.
+  const dmPolicy = account.config.dmPolicy ?? "open";
   const defaultGroupPolicy = resolveDefaultGroupPolicy(config as OpenClawConfig);
   const { groupPolicy, providerMissingFallbackApplied } =
     resolveAllowlistProviderRuntimeGroupPolicy({
