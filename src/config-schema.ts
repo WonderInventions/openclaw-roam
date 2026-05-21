@@ -38,7 +38,7 @@ export const RoamAccountSchemaBase = z
     dmPolicy: DmPolicySchema.optional().default("open"),
     allowFrom: z.array(z.string()).optional(),
     groupAllowFrom: z.array(z.string()).optional(),
-    groupPolicy: GroupPolicySchema.optional().default("allowlist"),
+    groupPolicy: GroupPolicySchema.optional().default("open"),
     groups: z.record(z.string(), RoamGroupSchema.optional()).optional(),
     webhookPath: z.string().optional(),
     apiBaseUrl: z.string().optional(),

@@ -65,4 +65,17 @@ describe("RoamConfigSchema", () => {
     const result = RoamConfigSchema.safeParse({ dmPolicy: "pairing" });
     expect(result.success).toBe(true);
   });
+
+  it("defaults groupPolicy to 'open' for symmetry with dmPolicy", () => {
+    const result = RoamConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.groupPolicy).toBe("open");
+    }
+  });
+
+  it("still accepts groupPolicy='allowlist' as opt-in", () => {
+    const result = RoamConfigSchema.safeParse({ groupPolicy: "allowlist" });
+    expect(result.success).toBe(true);
+  });
 });
