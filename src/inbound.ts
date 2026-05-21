@@ -431,15 +431,12 @@ export async function handleRoamInbound(params: {
         ? message.timestamp * 1000
         : undefined;
 
-  // Pre-fetch chat history for groups, but ONLY the first time the session
-  // encounters this scope (top-level or a specific thread). After that, the
-  // openclaw session itself records every subsequent turn — re-fetching
-  // would just duplicate context the agent already has, and burn tokens
-  // N² as the thread grows. DMs are intentionally skipped — the openclaw
+  // Pre-fetch chat history for groups so the agent sees context it would
+  // otherwise have missed. DMs are intentionally skipped — the openclaw
   // session for `roam:<senderId>` already records every inbound + outbound
   // (the bot is always a participant), so chat.history is redundant.
   //
-  // On the FIRST turn for a scope we fetch two pages in parallel and merge:
+  // We fetch two pages in parallel and merge them:
   //   1. Top-level chat history (no threadTimestamp) — gives the parent
   //      that started the thread plus surrounding top-level context. The
   //      v1 `chat.history?threadTimestamp=X` endpoint returns only the
@@ -449,12 +446,29 @@ export async function handleRoamInbound(params: {
   //      same thread when there are several. Often empty on the first
   //      reply, which is exactly the case where the top-level fetch saves us.
   //
+  // Memoization gate (only safe when the bot sees every message in the
+  // chat): proactive bots configured with `requireMention: false` receive a
+  // webhook for every message and the session records continuous coverage,
+  // so we only need to fetch chat.history on the FIRST turn for each
+  // (session, scope) — after that, re-fetching would just duplicate
+  // context the agent already has and burn tokens N² as threads grow.
+  //
+  // For the mention-only case (`requireMention: true`, the typical PAT-bot
+  // shape — bot can't be a channel member and only sees @-mentions),
+  // ALWAYS fetch: any number of messages may have been posted between
+  // the bot's prior mention and now, and none of them were dispatched to
+  // the agent, so the session has gaps the memo would mask.
+  //
   // Bounded by historyLimit (default 20, server max 200). 0 disables.
   const historyLimit = account.config.historyLimit ?? 20;
   const historyScope = threadTimestamp !== undefined ? `thread:${threadTimestamp}` : "top";
   const historyMemoKey = route.sessionKey ?? `chat:${chatId}`;
+  // shouldRequireMention is true only for groups; for DMs we exit before reaching here.
+  const canMemoizeHistory = isGroup && !shouldRequireMention;
   const shouldFetchHistory =
-    isGroup && historyLimit > 0 && !hasFetchedHistoryFor(historyMemoKey, historyScope);
+    isGroup &&
+    historyLimit > 0 &&
+    (!canMemoizeHistory || !hasFetchedHistoryFor(historyMemoKey, historyScope));
   const historyFetchCfg = {
     cfg: config,
     accountId: account.accountId,
@@ -483,7 +497,9 @@ export async function handleRoamInbound(params: {
         }),
       );
     }
-    recordHistoryFetched(historyMemoKey, historyScope);
+    if (canMemoizeHistory) {
+      recordHistoryFetched(historyMemoKey, historyScope);
+    }
   }
   const fetched = (await Promise.all(fetches)).flat();
   // Dedupe by microsecond timestamp (a message that appears in both fetches
