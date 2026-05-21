@@ -592,6 +592,17 @@ export async function handleRoamInbound(params: {
         runtime.error?.(`roam[${account.accountId}] ${info.kind} reply failed: ${String(err)}`);
       },
       replyOptions: {
+        // Roam is a direct-reply channel: the agent's assistant text is the
+        // user-facing reply, not a side-channel that needs an explicit
+        // `message.send` tool call to be visible. Without this, the host's
+        // default for group chats — `sourceReplyDeliveryMode: "message_tool_only"`
+        // when `messages.groupChat.visibleReplies` is anything other than
+        // "automatic" — silently suppresses replies in groups: the agent
+        // produces text in its session log, the dispatcher hits the
+        // `suppressDelivery` branch, and our `deliver` callback is never
+        // invoked. Force "automatic" so Roam group replies always reach the
+        // channel regardless of the host-level visibleReplies preference.
+        sourceReplyDeliveryMode: "automatic",
         skillFilter: groupConfig?.skills,
         disableBlockStreaming: useStreaming
           ? true
