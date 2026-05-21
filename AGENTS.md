@@ -1,0 +1,202 @@
+# AGENTS.md — `@roamhq/openclaw-roam`
+
+Developer notes for working on this plugin. The README is for operators
+configuring the bot; this file is for anyone (human or coding agent) editing
+the source.
+
+## What this is
+
+A channel plugin for [OpenClaw](https://github.com/openclaw/openclaw) that
+bridges Roam HQ (https://ro.am) chat to an OpenClaw agent. Inbound webhook
+events from Roam fan out to the host's agent runtime; outbound replies go back
+via the Roam v1 HTTP API.
+
+```
+Roam webhook ─► setup-surface ─► monitor ─► handleRoamInbound (src/inbound.ts)
+                                                 │
+                                                 ├─ access/policy gates
+                                                 ├─ chat.history (group context)
+                                                 ├─ dispatch to agent runtime
+                                                 └─ deliver → sendMessageRoam → POST chat.post
+```
+
+## Layout
+
+| Path                           | Concern                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| `src/inbound.ts`               | Dispatch entry point. Drop checks, access gates, history fetch, deliver. |
+| `src/monitor.ts`               | Webhook → `RoamInboundMessage` normalization; bot identity fetch.        |
+| `src/send.ts`                  | `chat.post` / `chat.update` / `chat.typing` outbound API.                |
+| `src/history.ts`               | `GET /v1/chat.history`.                                                  |
+| `src/streaming.ts`             | Legacy "live message" via `chat.post` + `chat.update` edit loop.         |
+| `src/chat-stream.ts`           | Native streaming via `chat.startStream` / `appendStream` / `stopStream`. |
+| `src/accounts.ts`              | Multi-account resolution (`channels.roam.accounts.<id>`).                |
+| `src/policy.ts`                | Per-group `requireMention`, `replyInThread`, allowlist resolution.       |
+| `src/channel.ts`               | Host-facing channel adapter (`sendText`, `sendMedia`).                   |
+| `src/config-schema.ts`         | Zod schema; mirror any field added in `openclaw.plugin.json`.            |
+| `src/env-export.ts`            | Surfaces `ROAM_API_KEY` to the agent's env for MCP/tool use.             |
+| `testdata/openclaw-fixtures/`  | Contract fixtures, shared with wonder's appserver e2e suite.             |
+
+## Commands
+
+```bash
+npm test           # vitest run (includes contract tests)
+npm run typecheck  # tsc --noEmit
+npm run build      # tsc --project tsconfig.build.json → dist/
+```
+
+## Multi-account model
+
+Configs may carry one or many accounts:
+
+```jsonc
+channels: {
+  roam: {
+    accounts: {
+      default: { apiKey: "rmp-…", … },     // PAT bot
+      org:     { apiKey: "rmk-…", … },     // org-token bot
+    },
+  },
+},
+bindings: [
+  { channel: "roam", account: "org", agent: "sre-agent" },
+],
+```
+
+- `accounts.<id>` keys flow through to every outbound call via `accountId`.
+- `bindings[]` routes a given account to a specific agent. Without a binding,
+  routing falls back to the default agent.
+- The legacy flat form (`channels.roam.apiKey` at top level) still works;
+  `accounts.ts` flattens both into `ResolvedRoamAccount`.
+
+## PAT vs Org tokens
+
+| Token prefix | `token.info` field | Can be a group member?         | Webhook coverage in groups       |
+| ------------ | ------------------ | ------------------------------ | -------------------------------- |
+| `rmp-` (PAT) | `data.bot`         | No — represents a human user.  | Only events that @-mention.      |
+| `rmk-` (Org) | `data.user`        | Yes — added like any member.   | Every event in member groups.    |
+
+`fetchRoamBotIdentity` (in `monitor.ts`) falls back to `data.user` when
+`data.bot` is absent. The two-shape response is load-bearing — don't assume
+one or the other.
+
+**Implication for `requireMention`:**
+- Org bots in a group can default to `requireMention: false` (proactive); they
+  see every message and can decide whether to chime in.
+- PAT bots should keep `requireMention: true` (default); they only get the
+  webhook on mention anyway.
+
+## Threading
+
+Roam expresses threads via **microsecond UNIX timestamps**, not opaque IDs.
+
+- The webhook delivers `threadTimestamp` (µs) for replies — this is the parent
+  message's timestamp, identifying the thread.
+- Outbound calls (`chat.post`, `chat.update`, `chat.typing`) accept
+  `threadTimestamp` in the JSON body to place a reply in a thread.
+- `message.timestamp` from `webhookEventToInbound` is **milliseconds** (we
+  normalize at the boundary). When we use the inbound's own timestamp as the
+  thread parent for a new thread, we multiply by 1000 (see `inbound.ts`
+  `replyInThread` branch).
+
+**Where the reply lands** (logic in `inbound.ts` ~L373):
+1. Inbound was already in a thread → reply in the same thread.
+2. Top-level inbound + group has `replyInThread: true` → start a new thread
+   under the inbound message.
+3. Otherwise → reply at top level.
+
+**`chat.history` quirks:**
+- Query param is `chatId` (the deployed v1 API does *not* accept `chat` as the
+  OpenAPI draft says).
+- With `threadTimestamp=X`, the response is the **replies of X**, NOT X itself.
+  If you want the full thread including the root, fetch top-level too and
+  merge (currently we only fetch the thread-scoped slice; revisit if context
+  feels thin).
+- Server cap is 200; default in this plugin is 20. `historyLimit: 0` disables.
+
+**Streaming + threading:** The native stream lifecycle (`chat.startStream`)
+does not currently support `threadTimestamp`. Thinking content always posts at
+top level. Answer content falls back to `chat.post` (which does support
+threading) when `streaming.nativeTransport` is unset.
+
+## Access gating layers (in order)
+
+`inbound.ts` runs these before dispatching:
+
+1. **Self-message drop** — `botId === senderId` → drop, log only.
+2. **Empty body + no media** → drop silently.
+3. **Group allowlist match** — `groups: { "<chatId>": {…} }` (and `"*"`
+   wildcard). Out-of-list groups dropped.
+4. **`enabled: false`** on the matched group → drop.
+5. **DM/group access decision** — `resolveDmGroupAccessWithCommandGate` from
+   the host runtime. May trigger pairing flow in DMs.
+6. **`groupPolicy` + per-group allowlist** — `open` / `allowlist` / `disabled`.
+7. **Mention gate** — `requireMention: true` + no mention detected → drop.
+   Control commands bypass via `commandAuthorized`.
+
+Typing pulse starts **after** all drop checks pass. The shared contract
+fixtures assert zero API calls on drop paths — don't move the
+`fireTypingPulse()` call earlier.
+
+## Streaming
+
+Two transports for the answer:
+
+- **Native** (`streaming.nativeTransport: true`): `chat.startStream` →
+  `appendStream` → `stopStream`. No threading support.
+- **Live-message fallback**: post a placeholder via `chat.post`, then `chat.update`
+  to grow the message. Supports threading. Used when native is off or in the
+  fallback path after a stream failure.
+
+Reasoning ("thinking") always uses the native stream lifecycle with
+`kind: "thinking"` so Roam renders it as a collapsed thought bubble, separate
+from the answer. The two tracks (`thinkingTrack`, `answerTrack`) are created
+independently and finalized in the `finally`.
+
+## Contract fixtures
+
+`testdata/openclaw-fixtures/*.json` is the **canonical contract** between this
+plugin and Roam's appserver. The same files are consumed by
+`wonder/e2e_openclaw_webhook_contract_test.go` (live HTTP) and by
+`src/contract.test.ts` (in-process, with `fetchWithSsrFGuard` mocked).
+
+When changing inbound → outbound behavior:
+1. Update the fixture (both directions read it).
+2. `npm test` here.
+3. Run the wonder e2e (or open a PR there) to keep both halves aligned.
+
+Don't add Roam-internal-only behaviors to fixtures — those belong in
+`inbound.test.ts` / `send.test.ts`.
+
+## Common gotchas
+
+- **Group replies silently dropped.** If the agent produces text but nothing
+  arrives in Roam, check the host's `messages.groupChat.visibleReplies` — when
+  set to `message_tool`, deliver is never called for groups. Set
+  `sourceReplyDeliveryMode: "automatic"` on `replyOptions` to opt back in.
+- **`chat.history` returning count=0** despite messages existing in the chat:
+  most likely the response field shape drifted. Current production returns
+  `userId`, but the OpenAPI draft says `sender`. `history.ts` reads `sender` —
+  if the API changes, expect a silent empty-array regression.
+- **Typing indicator outlives the message.** Roam holds typing ~3s after the
+  last pulse; the deliver path stops the pulse before `chat.post` for that
+  reason. If you add a new delivery branch, call `stopTypingPulse()` first.
+- **`threadKey` is dead.** Earlier code used a string `threadKey`; the deployed
+  API uses microsecond `threadTimestamp` and the two are mutually exclusive.
+  Don't reintroduce `threadKey`.
+- **Microseconds vs milliseconds.** Webhook normalization converts incoming
+  `timestamp` to ms; everything thread-related stays in µs. Mixing them
+  silently produces threads in the year 53890 or chats from 1970.
+
+## Releasing
+
+- Bump `version` in `package.json`.
+- Open a PR (never push to `master` directly).
+- After merge, the release workflow publishes to npm via OIDC trusted
+  publishing — requires Node 24 in CI (ships with npm ≥ 11.5.1).
+
+## Related
+
+- Operator/user docs: `developer-ro-am` repo, `docs/integrations/openclaw.md`.
+- Roam API reference: https://api.ro.am/docs.
+- OpenClaw plugin SDK: `openclaw/plugin-sdk/*`.
