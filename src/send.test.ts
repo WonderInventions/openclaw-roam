@@ -250,7 +250,7 @@ describe("uploadItemRoam", () => {
     expect(opts.headers.Authorization).toBe("Bearer test-api-key");
     expect(opts.headers["Content-Type"]).toBe("image/png");
     expect(opts.headers["Content-Disposition"]).toBe('attachment; filename="cat.png"');
-    expect(result).toEqual({ itemId: "item-abc", mimeType: "image/png" });
+    expect(result).toEqual({ itemId: "item-abc" });
   });
 
   it("derives a filename from the content-type when the URL has no extension", async () => {

@@ -344,7 +344,7 @@ function contentTypeFilename(base: string, contentType: string): string {
 export async function uploadItemRoam(
   mediaUrl: string,
   opts: RoamSendOpts = {},
-): Promise<{ itemId: string; mimeType?: string }> {
+): Promise<{ itemId: string }> {
   const { cfg, account, apiKey } = resolveRoamSendContext(opts);
   const apiBase = resolveApiBase(cfg, account.config.apiBaseUrl);
   const logger = getRoamRuntime().logging.getChildLogger({
@@ -393,7 +393,7 @@ export async function uploadItemRoam(
     logger.info(
       `[roam-send] item.upload OK  id=${data.id} mime=${data.mime ?? contentType} dt=${Date.now() - startedAt}ms`,
     );
-    return { itemId: data.id, mimeType: data.mime ?? contentType };
+    return { itemId: data.id };
   } finally {
     await release();
   }

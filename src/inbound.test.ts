@@ -688,6 +688,43 @@ describe("handleRoamInbound", () => {
       );
       expect(notices).toHaveLength(0);
     });
+
+    it("invokes the pairing controller's issueChallenge when decision is 'pairing'", async () => {
+      // After v0.4.0, dmPolicy defaults to "open" — pairing is opt-in. But
+      // when an operator does opt into `dmPolicy: "pairing"`, the host SDK
+      // returns `decision: "pairing"` for unrecognized senders and the
+      // plugin is supposed to delegate to `pairing.issueChallenge`. This
+      // test pins that integration so a future refactor can't silently break
+      // the opt-in path.
+      mockIssuePairingChallenge.mockClear();
+      mockResolveDmGroupAccessWithCommandGate.mockReturnValueOnce({
+        decision: "pairing",
+        reason: "needs-pairing",
+        commandAuthorized: false,
+        shouldBlockControlCommand: false,
+        effectiveGroupAllowFrom: undefined,
+      });
+
+      await handleRoamInbound({
+        message: makeMessage({
+          chatType: "direct",
+          chatId: "dm-chat",
+          senderId: "new-user",
+          text: "hi",
+        }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+
+      expect(mockIssuePairingChallenge).toHaveBeenCalledOnce();
+      const args = mockIssuePairingChallenge.mock.calls[0][0];
+      expect(args.senderId).toBe("new-user");
+      expect(args.senderIdLine).toContain("new-user");
+      expect(typeof args.sendPairingReply).toBe("function");
+      expect(mockDispatchInboundReplyWithBase).not.toHaveBeenCalled();
+    });
   });
 
   describe("empty text handling", () => {

@@ -171,6 +171,13 @@ function createRoamNativeStreamTrack(
       return;
     }
     failed = true;
+    // Cancel any pending throttled flush so the scheduler doesn't hold the
+    // ref alive longer than needed. A fired-too-late timer would short-circuit
+    // on `if (failed) return;` anyway, but clearing it is cleaner.
+    if (throttleTimer) {
+      clearTimeout(throttleTimer);
+      throttleTimer = null;
+    }
     logEvent(`FAIL ${reason}`);
     params.onError?.(reason);
     // Best-effort: if we had a live server-side session, close it so it
