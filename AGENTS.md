@@ -26,7 +26,7 @@ Roam webhook ─► setup-surface ─► monitor ─► handleRoamInbound (src/i
 | ------------------------------ | ------------------------------------------------------------------------ |
 | `src/inbound.ts`               | Dispatch entry point. Drop checks, access gates, history fetch, deliver. |
 | `src/monitor.ts`               | Webhook → `RoamInboundMessage` normalization; bot identity fetch.        |
-| `src/send.ts`                  | `chat.post` / `chat.update` / `chat.typing` outbound API.                |
+| `src/send.ts`                  | Outbound: `chat.post` / `chat.update` / `chat.typing` / `item.upload`.   |
 | `src/history.ts`               | `GET /v1/chat.history`.                                                  |
 | `src/streaming.ts`             | Legacy "live message" via `chat.post` + `chat.update` edit loop.         |
 | `src/chat-stream.ts`           | Native streaming via `chat.startStream` / `appendStream` / `stopStream`. |
@@ -172,6 +172,24 @@ the residual answer content; thinking content is simply lost.
 
 `useNativeStreaming` in `inbound.ts` is the single gate. Don't conditionally
 enable one lane and not the other — the beta is "all or nothing."
+
+## Outbound media (item.upload)
+
+When the host runtime calls `sendMedia` with a `mediaUrl`, the plugin:
+
+1. Fetches the bytes via the SSRF-guarded `fetchRemoteMedia` (same path
+   inbound media downloads use). Bounded by `MAX_IMAGE_BYTES` (~10 MB).
+2. POSTs to `/v1/item.upload` with `Content-Type: <mime>` and
+   `Content-Disposition: attachment; filename=...` headers. Filename is
+   derived from the URL path or synthesized from the content-type.
+3. POSTs to `/v1/chat.post` with `items: [itemId]` so the upload renders as
+   a real attachment in the message (image preview / downloadable file)
+   rather than a pasted URL.
+
+`chat.startStream` does NOT accept `items` — media payloads always take the
+chat.post path. `deliverRoamReply` already routes media via chat.post; the
+streaming track is bypassed for media-bearing payloads (see
+`resolveSendableOutboundReplyParts.hasMedia`).
 
 ## Contract fixtures
 

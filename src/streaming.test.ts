@@ -302,4 +302,57 @@ describe("createRoamLiveMessageTrack", () => {
     await tickThrottle();
     expect(updateMessageRoam).not.toHaveBeenCalled();
   });
+
+  it("fails closed when a single grapheme exceeds the byte budget (cap-split stuck)", async () => {
+    // 4-byte UTF-8 codepoint (😀) with a budget smaller than one full
+    // codepoint. sliceByByteBudget returns 0 — the loop would otherwise
+    // spin forever, so the track marks itself failed and surfaces the
+    // reason via onError.
+    const onError = vi.fn();
+    const track = createRoamLiveMessageTrack({
+      chatId: "c1",
+      accountId: "default",
+      minInitialChars: 1,
+      messageByteBudget: 2,
+      onError,
+    });
+
+    await track.pushAccumulated("😀");
+    await tickThrottle();
+
+    expect(sendMessageRoam).not.toHaveBeenCalled();
+    expect(track.isFailed()).toBe(true);
+    expect(onError).toHaveBeenCalledWith(
+      expect.stringContaining("cap-split could not advance"),
+    );
+  });
+
+  it("propagates failure when the second cap-split message fails", async () => {
+    // First message succeeds, second message (the spillover) throws — the
+    // track must mark failed and keep the committed length so the deliver
+    // fallback only re-posts the unsent suffix.
+    sendMessageRoam.mockResolvedValueOnce({ chatId: "c1", timestamp: 100 });
+    sendMessageRoam.mockRejectedValueOnce(new Error("network error"));
+
+    const onError = vi.fn();
+    const track = createRoamLiveMessageTrack({
+      chatId: "c1",
+      accountId: "default",
+      minInitialChars: 1,
+      messageByteBudget: 5,
+      onError,
+    });
+
+    await track.pushAccumulated("abcdefgh");
+    await tickThrottle();
+    await tickThrottle();
+
+    expect(sendMessageRoam).toHaveBeenCalledTimes(2);
+    expect(track.isFailed()).toBe(true);
+    // First message's 5 chars committed; the failed second message resets
+    // committed by the lastSentText length (0 since lastSentText was cleared
+    // post-rotation). The first 5 stay committed.
+    expect(track.getCommittedLength()).toBe(5);
+    expect(onError).toHaveBeenCalled();
+  });
 });

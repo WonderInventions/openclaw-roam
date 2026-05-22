@@ -485,6 +485,8 @@ export async function handleRoamInbound(params: {
   const rawBody = message.text?.trim() ?? "";
   const hasMedia = (message.mediaUrls?.length ?? 0) > 0;
   if (!rawBody && !hasMedia) {
+    runtime.log?.(`roam[${account.accountId}]: drop empty-body message from ${message.senderId}`);
+    recordRoamEvent("drop:empty-body");
     return;
   }
 
