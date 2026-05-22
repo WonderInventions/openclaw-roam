@@ -37,6 +37,25 @@ OpenClaw config:
 }
 ```
 
+For shared-host deployments, point at a file on disk instead of pasting the
+secret inline. The file should be mode `0600` and owned by the gateway user;
+the plugin reads it at startup and treats it identically to `apiKey`:
+
+```json5
+{
+  channels: {
+    roam: {
+      apiKeyFile: "/etc/openclaw/secrets/roam-default.token",
+      // ...
+    },
+  },
+}
+```
+
+You can also pass the token via the `ROAM_API_KEY` env var (or per-account
+`ROAM_API_KEY_<ACCOUNT_ID>`), e.g. when injecting a secret at process-spawn
+from a vault.
+
 Start the gateway:
 
 ```bash

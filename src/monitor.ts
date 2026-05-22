@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolveLoggerBackedRuntime } from "openclaw/plugin-sdk/extension-shared";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
@@ -80,13 +80,23 @@ export function verifyStandardWebhookSignature(
 
   // Compute expected signature: HMAC-SHA256(key, "${msgId}.${msgTimestamp}.${rawBody}")
   const signedContent = `${msgId}.${msgTimestamp}.${rawBody}`;
-  const expectedSig = createHmac("sha256", secretBytes).update(signedContent).digest("base64");
+  const expectedSigBytes = createHmac("sha256", secretBytes).update(signedContent).digest();
 
-  // The header may contain multiple space-separated "v1,<base64>" signatures
+  // The header may contain multiple space-separated "v1,<base64>" signatures.
+  // Use timingSafeEqual rather than string equality so signature comparison
+  // doesn't leak bits via response-time side channel.
   const signatures = msgSignature.split(" ");
   for (const sig of signatures) {
     const parts = sig.split(",");
-    if (parts[0] === "v1" && parts[1] === expectedSig) {
+    if (parts[0] !== "v1" || typeof parts[1] !== "string") continue;
+    let candidateBytes: Buffer;
+    try {
+      candidateBytes = Buffer.from(parts[1], "base64");
+    } catch {
+      continue;
+    }
+    if (candidateBytes.length !== expectedSigBytes.length) continue;
+    if (timingSafeEqual(candidateBytes, expectedSigBytes)) {
       return true;
     }
   }
@@ -100,7 +110,10 @@ const webhookInFlightLimiter = createWebhookInFlightLimiter();
 // chat.message webhooks (observed ~50ms apart with distinct webhook-ids but
 // identical messageId). Key is `${accountId}:${messageId}` so multi-account
 // setups don't cross-contaminate; value is the insertion timestamp in ms.
+// Bounded so a sustained high-rate burst can't grow unbounded between TTL
+// sweeps: TTL handles the steady state, the size cap handles bursts.
 const RECENT_MESSAGE_TTL_MS = 60_000;
+const RECENT_MESSAGE_MAX = 10_000;
 const recentMessageIds = new Map<string, number>();
 
 function isDuplicateRoamMessage(accountId: string, messageId: string): boolean {
@@ -113,6 +126,13 @@ function isDuplicateRoamMessage(accountId: string, messageId: string): boolean {
     }
   }
   if (recentMessageIds.has(key)) return true;
+  // Cap by eldest-insertion eviction. Map iteration order is insertion order,
+  // so deleting from the front drops the oldest entries first.
+  while (recentMessageIds.size >= RECENT_MESSAGE_MAX) {
+    const oldest = recentMessageIds.keys().next().value;
+    if (oldest === undefined) break;
+    recentMessageIds.delete(oldest);
+  }
   recentMessageIds.set(key, now);
   return false;
 }
@@ -237,6 +257,17 @@ async function handleRoamWebhookRequest(
 
       const event = parseRoamWebhookEvent(parsed);
       if (!event) {
+        // Surface the rejected event's `type` so operators see when Roam adds
+        // a new event kind we don't yet handle, instead of silently 400-ing.
+        const rejectedType =
+          parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>).type
+            : undefined;
+        target.runtime.log?.(
+          `[${target.account.accountId}] roam: rejected webhook event (type=${
+            typeof rejectedType === "string" ? rejectedType : "?"
+          }); update the plugin if this is a new Roam event kind`,
+        );
         res.statusCode = 400;
         res.setHeader("Content-Type", "text/plain; charset=utf-8");
         res.end("invalid event payload");
@@ -456,13 +487,37 @@ export async function monitorRoamProvider(opts: RoamMonitorOptions): Promise<{ s
     accountId: account.accountId,
   });
 
-  // Fetch bot persona identity for self-message filtering
+  // Fetch bot persona identity for self-message filtering and (for PATs)
+  // owner-only enforcement. Retry briefly on transient failures so a single
+  // network blip at startup doesn't degrade security for the lifetime of the
+  // process.
   const accountApiBaseUrl = account.config.apiBaseUrl;
-  const botIdentity = await fetchRoamBotIdentity(account.apiKey, cfg, accountApiBaseUrl);
+  let botIdentity = await fetchRoamBotIdentity(account.apiKey, cfg, accountApiBaseUrl);
+  for (let attempt = 1; attempt <= 2 && !botIdentity; attempt++) {
+    // Skip the inter-attempt sleep under vitest so retry-path tests don't
+    // each cost ~3s of wall time. Production keeps the linear backoff.
+    const delayMs = process.env.NODE_ENV === "test" ? 0 : attempt * 1000;
+    logger.warn(
+      `[${account.accountId}] token.info attempt ${attempt} failed; retrying in ${delayMs}ms`,
+    );
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+    botIdentity = await fetchRoamBotIdentity(account.apiKey, cfg, accountApiBaseUrl);
+  }
   if (botIdentity) {
     account.botIdentity = botIdentity;
     logger.info(`[${account.accountId}] Roam bot persona: ${botIdentity.name} (${botIdentity.id})`);
   } else {
+    // Fail-closed for PATs (rmp-): the owner-only filter is this bot's
+    // security boundary. Without an ownerId we'd respond to anyone, which is
+    // worse than not starting at all. Org tokens (rmk-) lose self-message
+    // filtering but the bot is still workspace-scoped, so we let those start.
+    if (account.apiKey.startsWith("rmp-")) {
+      throw new Error(
+        `[${account.accountId}] Personal Access Token but token.info failed after retries — refusing to start. ` +
+          "A PAT bot without a discoverable owner would respond to any sender. " +
+          "Check the token's scopes/approval status and restart.",
+      );
+    }
     logger.warn(
       `[${account.accountId}] Could not fetch bot identity from token.info; self-message filtering disabled`,
     );
@@ -494,12 +549,31 @@ export async function monitorRoamProvider(opts: RoamMonitorOptions): Promise<{ s
   const webhookUrl = account.config.webhookUrl?.trim() || undefined;
 
   if (webhookUrl) {
-    try {
-      await subscribeRoamWebhooks({ apiKey: account.apiKey, webhookUrl, cfg, accountApiBaseUrl });
-      logger.info(`[${account.accountId}] Roam webhooks subscribed at ${webhookUrl}`);
-    } catch (err) {
+    // Retry once on transient failure — webhook.subscribe is idempotent
+    // server-side, so a redundant retry is cheap. Manual fallback note still
+    // applies if both attempts fail.
+    let subscribed = false;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2 && !subscribed; attempt++) {
+      try {
+        await subscribeRoamWebhooks({
+          apiKey: account.apiKey,
+          webhookUrl,
+          cfg,
+          accountApiBaseUrl,
+        });
+        subscribed = true;
+        logger.info(`[${account.accountId}] Roam webhooks subscribed at ${webhookUrl}`);
+      } catch (err) {
+        lastErr = err;
+        if (attempt === 0 && process.env.NODE_ENV !== "test") {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+    }
+    if (!subscribed) {
       logger.warn(
-        `[${account.accountId}] Roam webhook subscription failed: ${String(err)}. Register webhooks manually in Roam admin.`,
+        `[${account.accountId}] Roam webhook subscription failed after retry: ${String(lastErr)}. Register webhooks manually in Roam admin.`,
       );
     }
   } else {
