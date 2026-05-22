@@ -46,7 +46,7 @@ const {
   mockReadStoreAllowFrom: vi.fn().mockResolvedValue([]),
   mockLogInboundDrop: vi.fn(),
   mockLogTypingFailure: vi.fn(),
-  mockResolveDmGroupAccessWithCommandGate: vi.fn(() => ({
+  mockResolveDmGroupAccessWithCommandGate: vi.fn((_params: Record<string, unknown>) => ({
     decision: "allow",
     reason: "open",
     commandAuthorized: true,
@@ -371,6 +371,75 @@ describe("handleRoamInbound", () => {
     });
   });
 
+  describe("open-policy → wildcard allowFrom expansion", () => {
+    // openclaw SDK >=2026.5.x treats `dmPolicy: "open"` with empty `allowFrom`
+    // as block-all rather than allow-all — `"*"` must be on the list (or the
+    // sender explicitly listed) for the gate to pass. The plugin synthesizes
+    // `["*"]` to keep the "open means open" surface promise consistent.
+
+    it("expands empty allowFrom to ['*'] when dmPolicy is open (DM)", async () => {
+      mockResolveDmGroupAccessWithCommandGate.mockClear();
+      await handleRoamInbound({
+        message: makeMessage({ chatType: "direct" }),
+        account: makeAccount({ config: { dmPolicy: "open" } }),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+      const callArgs = mockResolveDmGroupAccessWithCommandGate.mock.calls[0][0];
+      expect(callArgs.dmPolicy).toBe("open");
+      expect(callArgs.allowFrom).toEqual(["*"]);
+    });
+
+    it("preserves an explicit allowFrom under dmPolicy: open (no synthesized wildcard)", async () => {
+      mockResolveDmGroupAccessWithCommandGate.mockClear();
+      await handleRoamInbound({
+        message: makeMessage({ chatType: "direct" }),
+        account: makeAccount({
+          config: { dmPolicy: "open", allowFrom: ["user-a", "user-b"] },
+        }),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+      const callArgs = mockResolveDmGroupAccessWithCommandGate.mock.calls[0][0];
+      expect(callArgs.allowFrom).toEqual(["user-a", "user-b"]);
+    });
+
+    it("does NOT synthesize ['*'] when dmPolicy is allowlist (operator opted in to restriction)", async () => {
+      mockResolveDmGroupAccessWithCommandGate.mockClear();
+      await handleRoamInbound({
+        message: makeMessage({ chatType: "direct" }),
+        account: makeAccount({ config: { dmPolicy: "allowlist" } }),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+      const callArgs = mockResolveDmGroupAccessWithCommandGate.mock.calls[0][0];
+      expect(callArgs.allowFrom).toEqual([]);
+    });
+
+    it("also expands empty groupAllowFrom to ['*'] when groupPolicy is open", async () => {
+      // Same reasoning for the group path — `groupPolicy: open` with empty
+      // `groupAllowFrom` should mean "anyone in the group" per our surface,
+      // but the SDK now treats it strictly.
+      mockResolveAllowlistProviderRuntimeGroupPolicy.mockReturnValueOnce({
+        groupPolicy: "open",
+        providerMissingFallbackApplied: false,
+      });
+      mockResolveDmGroupAccessWithCommandGate.mockClear();
+      await handleRoamInbound({
+        message: makeMessage({ chatType: "group", chatId: "chat-1" }),
+        account: makeAccount({ config: { groupPolicy: "open" } }),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+      const callArgs = mockResolveDmGroupAccessWithCommandGate.mock.calls[0][0];
+      expect(callArgs.groupAllowFrom).toEqual(["*"]);
+    });
+  });
+
   describe("group allowlist gate honors groupPolicy", () => {
     // The per-group `groups` map's allowed=false only gates traffic in
     // `allowlist` mode. Under `open`, listed entries are overrides — they
@@ -551,6 +620,73 @@ describe("handleRoamInbound", () => {
       expect(mockSendMessageRoam).toHaveBeenCalledTimes(1);
       const opts = mockSendMessageRoam.mock.calls[0][2];
       expect(opts).toMatchObject({ threadTimestamp: 1700000000000001 });
+    });
+
+    it("posts a one-time notice when a non-allowlisted sender DMs the bot", async () => {
+      // dmPolicy: "allowlist" + sender not in allowFrom → access.decision is
+      // something other than "allow" / "pairing". Mirror the group case: post
+      // a courtesy notice telling the sender how to get added.
+      mockResolveDmGroupAccessWithCommandGate.mockReturnValueOnce({
+        decision: "deny",
+        reason: "allowlist",
+        commandAuthorized: false,
+        shouldBlockControlCommand: false,
+        effectiveGroupAllowFrom: undefined,
+      });
+
+      await handleRoamInbound({
+        message: makeMessage({
+          chatType: "direct",
+          chatId: "dm-chat",
+          senderId: "stranger-uuid",
+          text: "hello",
+        }),
+        account: makeAccount({ accountId: "org" }),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+
+      expect(mockSendMessageRoam).toHaveBeenCalledTimes(1);
+      const [target, text, opts] = mockSendMessageRoam.mock.calls[0];
+      expect(target).toBe("dm-chat");
+      expect(text).toContain("you're not on my allowlist");
+      expect(text).toContain("`org`");
+      expect(text).toContain("`stranger-uuid`");
+      expect(opts).toMatchObject({ accountId: "org" });
+      expect(mockDispatchInboundReplyWithBase).not.toHaveBeenCalled();
+    });
+
+    it("does not post a DM notice when the decision is 'pairing'", async () => {
+      // Pairing decisions issue their own challenge — don't double up.
+      mockResolveDmGroupAccessWithCommandGate.mockReturnValueOnce({
+        decision: "pairing",
+        reason: "needs-pairing",
+        commandAuthorized: false,
+        shouldBlockControlCommand: false,
+        effectiveGroupAllowFrom: undefined,
+      });
+
+      await handleRoamInbound({
+        message: makeMessage({
+          chatType: "direct",
+          chatId: "dm-chat",
+          senderId: "new-user",
+          text: "hi",
+        }),
+        account: makeAccount(),
+        config: defaultConfig,
+        runtime: defaultRuntime,
+        botId: "bot-uuid",
+      });
+
+      // sendMessageRoam may be called by the pairing flow, but NOT with our
+      // not-allowlisted notice text. Easiest check: no call contains
+      // "not on my allowlist".
+      const notices = mockSendMessageRoam.mock.calls.filter((c) =>
+        typeof c[1] === "string" ? c[1].includes("not on my allowlist") : false,
+      );
+      expect(notices).toHaveLength(0);
     });
   });
 

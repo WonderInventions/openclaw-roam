@@ -25,7 +25,6 @@
           "responsePrefix": { "type": "string" },
           "textChunkLimit": { "type": "integer", "minimum": 1 },
           "historyLimit": { "type": "integer", "minimum": 0 },
-          "dmHistoryLimit": { "type": "integer", "minimum": 0 },
           "streaming": {
             "type": "object",
             "properties": {

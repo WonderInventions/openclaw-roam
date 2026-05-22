@@ -3,6 +3,7 @@ import {
   normalizeRoamAllowlist,
   resolveRoamAllowlistMatch,
   resolveRoamGroupSystemPrompt,
+  resolveRoamReplyInThread,
 } from "./policy.js";
 
 describe("normalizeRoamAllowlist", () => {
@@ -108,5 +109,43 @@ describe("resolveRoamGroupSystemPrompt", () => {
         wildcardConfig: { systemPrompt: "" },
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("resolveRoamReplyInThread", () => {
+  // Default: thread every reply. Explicit per-group or wildcard settings win.
+
+  it("defaults to true with no config", () => {
+    expect(resolveRoamReplyInThread({})).toBe(true);
+  });
+
+  it("defaults to true regardless of requireMention", () => {
+    expect(
+      resolveRoamReplyInThread({ groupConfig: { requireMention: true } }),
+    ).toBe(true);
+    expect(
+      resolveRoamReplyInThread({ groupConfig: { requireMention: false } }),
+    ).toBe(true);
+  });
+
+  it("explicit groupConfig.replyInThread: false opts out", () => {
+    expect(
+      resolveRoamReplyInThread({ groupConfig: { replyInThread: false } }),
+    ).toBe(false);
+  });
+
+  it("explicit wildcardConfig.replyInThread: false opts out", () => {
+    expect(
+      resolveRoamReplyInThread({ wildcardConfig: { replyInThread: false } }),
+    ).toBe(false);
+  });
+
+  it("groupConfig wins over wildcardConfig", () => {
+    expect(
+      resolveRoamReplyInThread({
+        groupConfig: { replyInThread: false },
+        wildcardConfig: { replyInThread: true },
+      }),
+    ).toBe(false);
   });
 });

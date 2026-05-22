@@ -123,7 +123,11 @@ export function resolveRoamReplyInThread(params: {
   if (typeof params.wildcardConfig?.replyInThread === "boolean") {
     return params.wildcardConfig.replyInThread;
   }
-  return false;
+  // Default: thread the reply. Keeps each conversation scoped under the message
+  // that triggered it instead of stacking unrelated replies at the channel top
+  // level. Applies to mention-only and proactive bots alike — per-group or
+  // wildcard `replyInThread: false` opts out.
+  return true;
 }
 
 export function resolveRoamGroupSystemPrompt(params: {

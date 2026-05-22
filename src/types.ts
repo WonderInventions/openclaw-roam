@@ -70,8 +70,6 @@ export type RoamAccountConfig = {
   webhookPath?: string;
   /** Max group messages to keep as history context (0 disables). */
   historyLimit?: number;
-  /** Max DM turns to keep as history context. */
-  dmHistoryLimit?: number;
   /** Per-DM config overrides keyed by user UUID. */
   dms?: Record<string, DmConfig>;
   /** Outbound text chunk size (chars). Default: 8000. */

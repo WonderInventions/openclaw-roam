@@ -26,6 +26,21 @@ function resolveCredentials(
   return { apiKey };
 }
 
+/**
+ * Extract any tracing identifier the Roam edge attached to the response, for
+ * inclusion in our own log lines. Helps when correlating a plugin-side error
+ * back to a Roam appserver request. Returns an empty string when nothing's
+ * present so callers can interpolate unconditionally.
+ */
+function responseTraceTail(response: Response): string {
+  // Defensive — test mocks sometimes return bare `{ ok, status, text }` shapes
+  // without a real `Headers` instance. Production responses always have one.
+  const headers = response.headers as Headers | undefined;
+  const reqId =
+    headers?.get("x-request-id") ?? headers?.get("request-id") ?? "";
+  return reqId ? ` reqId=${reqId}` : "";
+}
+
 function normalizeChatId(to: string): string {
   const normalized = stripRoamTargetPrefix(to);
   if (!normalized) {
@@ -121,7 +136,7 @@ export async function sendMessageRoam(
       }
 
       logger.warn(
-        `[roam-send] chat.post FAIL chat=${chatId} status=${status} dt=${Date.now() - startedAt}ms body=${errorBody.slice(0, 200)}`,
+        `[roam-send] chat.post FAIL chat=${chatId} status=${status} dt=${Date.now() - startedAt}ms reqBytes=${Buffer.byteLength(message, "utf8")}${responseTraceTail(response)} body=${errorBody.slice(0, 200)}`,
       );
       throw new Error(errorMsg);
     }
@@ -238,7 +253,7 @@ export async function updateMessageRoam(
       }
 
       logger.warn(
-        `[roam-send] chat.update FAIL chat=${chatId} ts=${timestamp} status=${status} dt=${Date.now() - startedAt}ms body=${errorBody.slice(0, 200)}`,
+        `[roam-send] chat.update FAIL chat=${chatId} ts=${timestamp} status=${status} dt=${Date.now() - startedAt}ms reqBytes=${Buffer.byteLength(message, "utf8")}${responseTraceTail(response)} body=${errorBody.slice(0, 200)}`,
       );
       throw new Error(errorMsg);
     }
