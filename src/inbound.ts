@@ -26,6 +26,7 @@ import {
 import type { ResolvedRoamAccount } from "./accounts.js";
 import { createRoamAnswerStreamTrack, createRoamThinkingStreamTrack } from "./chat-stream.js";
 import { fetchRoamChatHistory, type RoamHistoryMessage } from "./history.js";
+import { recordRoamEvent } from "./metrics.js";
 import {
   normalizeRoamAllowlist,
   resolveRoamAllowlistMatch,
@@ -81,6 +82,182 @@ function recordHistoryFetched(sessionKey: string, scope: string): void {
 /** Test-only: clear the per-process history-fetch memoization. */
 export function __resetHistoryFetchMemoForTests(): void {
   historyFetchMemo.clear();
+}
+
+/**
+ * Fetch chat history context for the agent (groups only — DMs skip).
+ *
+ * Strategy: in parallel, fetch
+ *   1. top-level chat.history (no threadTimestamp) — provides the parent
+ *      that started the thread plus surrounding top-level context. The v1
+ *      `chat.history?threadTimestamp=X` endpoint returns only X's REPLIES
+ *      (not X itself), so without this fetch the agent has no record of
+ *      the message it's replying to.
+ *   2. thread replies (with threadTimestamp) when the inbound is itself in
+ *      a thread — sibling messages in the same thread when there are
+ *      several. Often empty on the first reply, which is exactly the
+ *      case where the top-level fetch saves us.
+ *
+ * Memoization gate: proactive bots (`requireMention: false`) see every
+ * message in the chat and the session records continuous coverage, so we
+ * only fetch on the FIRST turn for each (session, scope) — re-fetching
+ * after that would just duplicate context the agent already has and burn
+ * tokens N² as threads grow. For mention-only bots (`requireMention: true`,
+ * the typical PAT shape), ALWAYS fetch: any number of intervening messages
+ * may have been posted between mentions and none were dispatched.
+ *
+ * Returns the dedup'd, chronologically-sorted history excluding the inbound
+ * itself (which is already delivered as Body).
+ */
+async function fetchInboundHistoryContext(params: {
+  config: CoreConfig;
+  account: ResolvedRoamAccount;
+  runtime: RuntimeEnv;
+  chatId: string;
+  isGroup: boolean;
+  threadTimestamp: number | undefined;
+  shouldRequireMention: boolean;
+  sessionKey: string;
+  inboundTimestampMicros: number;
+}): Promise<Array<{ sender: string; body: string; timestamp: number }>> {
+  const {
+    config,
+    account,
+    runtime,
+    chatId,
+    isGroup,
+    threadTimestamp,
+    shouldRequireMention,
+    sessionKey,
+    inboundTimestampMicros,
+  } = params;
+
+  const historyLimit = account.config.historyLimit ?? 20;
+  if (!isGroup || historyLimit <= 0) return [];
+
+  const historyScope = threadTimestamp !== undefined ? `thread:${threadTimestamp}` : "top";
+  // Memoization is only safe when the bot will see every message (proactive).
+  // Mention-only bots have gaps the memo would mask, so they always re-fetch.
+  const canMemoize = !shouldRequireMention;
+  if (canMemoize && hasFetchedHistoryFor(sessionKey, historyScope)) return [];
+
+  const baseFetchCfg = {
+    cfg: config,
+    accountId: account.accountId,
+    apiKey: account.apiKey,
+    apiBaseUrl: account.config.apiBaseUrl,
+    chatId,
+    limit: historyLimit,
+  } as const;
+  const fetches: Array<Promise<RoamHistoryMessage[]>> = [
+    fetchRoamChatHistory(baseFetchCfg).catch((err) => {
+      runtime.error?.(
+        `roam[${account.accountId}]: chat.history (top-level) failed for chat ${chatId}: ${String(err)}`,
+      );
+      return [];
+    }),
+  ];
+  if (threadTimestamp !== undefined) {
+    fetches.push(
+      fetchRoamChatHistory({ ...baseFetchCfg, threadTimestamp }).catch((err) => {
+        runtime.error?.(
+          `roam[${account.accountId}]: chat.history (thread=${threadTimestamp}) failed for chat ${chatId}: ${String(err)}`,
+        );
+        return [];
+      }),
+    );
+  }
+  if (canMemoize) recordHistoryFetched(sessionKey, historyScope);
+
+  const fetched = (await Promise.all(fetches)).flat();
+  // Dedupe by µs (a message that appears in both fetches — e.g. the parent
+  // surfaced in the top-level page AND echoed in the thread page — should
+  // only be delivered once). Filter out the inbound itself. Sort ascending.
+  const byTimestamp = new Map<number, RoamHistoryMessage>();
+  for (const entry of fetched) {
+    if (entry.timestamp === inboundTimestampMicros) continue;
+    byTimestamp.set(entry.timestamp, entry);
+  }
+  return [...byTimestamp.values()]
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((entry) => ({
+      sender: entry.sender,
+      body: entry.text ?? "",
+      timestamp: Math.floor(entry.timestamp / 1000),
+    }));
+}
+
+/**
+ * Create the two streaming tracks (thinking + answer) used to deliver the
+ * agent's reply. Both honor the same `useNativeStreaming` switch — turning
+ * the beta off drops thinking content (chat.post has no thought-bubble
+ * equivalent) and uses chat.post + chat.update for the answer.
+ *
+ * Returns `getLastAnswerStreamError` so the deliver-time fallback log can
+ * include the root cause inline.
+ */
+function createDispatchTracks(params: {
+  chatId: string;
+  threadTimestamp: number | undefined;
+  account: ResolvedRoamAccount;
+  useStreaming: boolean;
+  useNativeStreaming: boolean;
+  onError: (message: string) => void;
+  onActivity: () => void;
+}): {
+  thinkingTrack: ReturnType<typeof createRoamThinkingStreamTrack> | null;
+  answerTrack:
+    | ReturnType<typeof createRoamAnswerStreamTrack>
+    | ReturnType<typeof createRoamLiveMessageTrack>
+    | null;
+  getLastAnswerStreamError: () => string | undefined;
+} {
+  const { chatId, threadTimestamp, account, useStreaming, useNativeStreaming, onError, onActivity } =
+    params;
+
+  if (!useStreaming) {
+    return { thinkingTrack: null, answerTrack: null, getLastAnswerStreamError: () => undefined };
+  }
+
+  // Thinking renders as a collapsed thought-bubble (ThinkingContent). Same
+  // native-streaming gate as the answer track — chat.post has no equivalent,
+  // so reasoning is silently dropped when native is off.
+  const thinkingTrack = useNativeStreaming
+    ? createRoamThinkingStreamTrack({
+        chatId,
+        threadTimestamp,
+        accountId: account.accountId,
+        apiKey: account.apiKey,
+        onError: (msg) => onError(`roam-stream[thinking]: ${msg}`),
+        onActivity,
+      })
+    : null;
+
+  // Capture the most recent answer-stream error so the deliver-time fallback
+  // log can show the cause inline.
+  let lastAnswerStreamError: string | undefined;
+  const recordAnswerStreamError = (label: string) => (msg: string) => {
+    lastAnswerStreamError = msg;
+    onError(`roam-stream[${label}]: ${msg}`);
+  };
+  const answerTrack = useNativeStreaming
+    ? createRoamAnswerStreamTrack({
+        chatId,
+        threadTimestamp,
+        accountId: account.accountId,
+        apiKey: account.apiKey,
+        onError: recordAnswerStreamError("answer-native"),
+        onActivity,
+      })
+    : createRoamLiveMessageTrack({
+        chatId,
+        threadTimestamp,
+        accountId: account.accountId,
+        apiKey: account.apiKey,
+        onError: recordAnswerStreamError("answer"),
+        onActivity,
+      });
+  return { thinkingTrack, answerTrack, getLastAnswerStreamError: () => lastAnswerStreamError };
 }
 
 /**
@@ -202,21 +379,41 @@ async function deliverRoamReply(params: {
   accountId: string;
   threadTimestamp?: number;
   statusSink?: (patch: { lastOutboundAt?: number }) => void;
+  log?: (message: string) => void;
+  error?: (message: string) => void;
 }): Promise<void> {
-  const { payload, chatId, accountId, threadTimestamp, statusSink } = params;
+  const { payload, chatId, accountId, threadTimestamp, statusSink, log, error } = params;
   await deliverFormattedTextWithAttachments({
     payload,
     send: async ({ text }) => {
-      const chunks =
+      const rawChunks =
         text.length <= ROAM_TEXT_CHUNK_LIMIT
           ? [text]
           : getRoamRuntime().channel.text.chunkMarkdownText(text, ROAM_TEXT_CHUNK_LIMIT);
-      for (const chunk of chunks) {
-        if (!chunk) {
-          continue;
+      const chunks = rawChunks.filter((c): c is string => Boolean(c));
+      const total = chunks.length;
+      // When a single reply must be split across multiple chat.post calls
+      // (Roam's 8KB per-message cap), failure of chunk N+1 after N succeeded
+      // leaves the user seeing only the first N chunks while the agent's
+      // session has the full text. Emit chunk indices so operators can
+      // reconcile from logs.
+      let sent = 0;
+      try {
+        for (let i = 0; i < total; i++) {
+          await sendMessageRoam(chatId, chunks[i], { accountId, threadTimestamp });
+          sent += 1;
+          statusSink?.({ lastOutboundAt: Date.now() });
+          if (total > 1) {
+            log?.(`roam[${accountId}]: chat.post chunk ${i + 1}/${total} chat=${chatId}`);
+          }
         }
-        await sendMessageRoam(chatId, chunk, { accountId, threadTimestamp });
-        statusSink?.({ lastOutboundAt: Date.now() });
+      } catch (err) {
+        if (total > 1) {
+          error?.(
+            `roam[${accountId}]: chat.post partial delivery chat=${chatId} sent=${sent}/${total} err=${String(err)}`,
+          );
+        }
+        throw err;
       }
     },
   });
@@ -242,6 +439,7 @@ export async function handleRoamInbound(params: {
   // Drop messages sent by the bot itself to prevent infinite loops.
   if (botId && message.senderId === botId) {
     runtime.log?.(`roam[${account.accountId}]: drop self-message from bot ${botId}`);
+    recordRoamEvent("drop:self-message");
     return;
   }
 
@@ -254,6 +452,7 @@ export async function handleRoamInbound(params: {
     runtime.log?.(
       `roam[${account.accountId}]: drop sender ${message.senderId} (not owner; personal bot)`,
     );
+    recordRoamEvent("drop:not-owner");
     return;
   }
 
@@ -377,10 +576,12 @@ export async function handleRoamInbound(params: {
       });
     }
     runtime.log?.(`roam[${account.accountId}]: drop chat ${chatId} (not allowlisted)`);
+    recordRoamEvent("drop:group-not-allowlisted");
     return;
   }
   if (groupConfig?.enabled === false) {
     runtime.log?.(`roam[${account.accountId}]: drop chat ${chatId} (disabled)`);
+    recordRoamEvent("drop:group-disabled");
     return;
   }
 
@@ -413,6 +614,7 @@ export async function handleRoamInbound(params: {
   if (isGroup) {
     if (access.decision !== "allow") {
       runtime.log?.(`roam[${account.accountId}]: drop group sender ${senderId} (reason=${access.reason})`);
+      recordRoamEvent("drop:group-access");
       return;
     }
     const groupAllow = resolveRoamGroupAllow({
@@ -423,6 +625,7 @@ export async function handleRoamInbound(params: {
     });
     if (!groupAllow.allowed) {
       runtime.log?.(`roam[${account.accountId}]: drop group sender ${senderId} (policy=${groupPolicy})`);
+      recordRoamEvent("drop:group-sender-policy");
       return;
     }
   } else {
@@ -463,6 +666,7 @@ export async function handleRoamInbound(params: {
         });
       }
       runtime.log?.(`roam[${account.accountId}]: drop DM sender ${senderId} (reason=${access.reason})`);
+      recordRoamEvent("drop:dm-access");
       return;
     }
   }
@@ -483,6 +687,7 @@ export async function handleRoamInbound(params: {
   // If the message was only a bot mention with no actual content (and no media), drop it.
   if (!bodyForAgent && !hasControlCommand && !hasMedia) {
     runtime.log?.(`roam[${account.accountId}]: drop mention-only message from ${senderId}`);
+    recordRoamEvent("drop:mention-only");
     return;
   }
 
@@ -508,6 +713,7 @@ export async function handleRoamInbound(params: {
   });
   if (isGroup && mentionGate.shouldSkip) {
     runtime.log?.(`roam[${account.accountId}]: drop chat ${chatId} (no mention)`);
+    recordRoamEvent("drop:no-mention");
     return;
   }
 
@@ -516,6 +722,7 @@ export async function handleRoamInbound(params: {
   // Roam's typing TTL is ~3s; 2s pulses keep continuous overlap.
   fireTypingPulse();
   typingInterval = setInterval(fireTypingPulse, 2000);
+  recordRoamEvent("dispatch:start");
 
   const route = core.channel.routing.resolveAgentRoute({
     cfg: config as OpenClawConfig,
@@ -574,94 +781,17 @@ export async function handleRoamInbound(params: {
         ? message.timestampMicros
         : undefined;
 
-  // Pre-fetch chat history for groups so the agent sees context it would
-  // otherwise have missed. DMs are intentionally skipped — the openclaw
-  // session for `roam:<senderId>` already records every inbound + outbound
-  // (the bot is always a participant), so chat.history is redundant.
-  //
-  // We fetch two pages in parallel and merge them:
-  //   1. Top-level chat history (no threadTimestamp) — gives the parent
-  //      that started the thread plus surrounding top-level context. The
-  //      v1 `chat.history?threadTimestamp=X` endpoint returns only the
-  //      REPLIES of message X (not X itself), so without this fetch the
-  //      agent has no record of the message it's replying to.
-  //   2. Thread replies (with threadTimestamp) — sibling messages in the
-  //      same thread when there are several. Often empty on the first
-  //      reply, which is exactly the case where the top-level fetch saves us.
-  //
-  // Memoization gate (only safe when the bot sees every message in the
-  // chat): proactive bots configured with `requireMention: false` receive a
-  // webhook for every message and the session records continuous coverage,
-  // so we only need to fetch chat.history on the FIRST turn for each
-  // (session, scope) — after that, re-fetching would just duplicate
-  // context the agent already has and burn tokens N² as threads grow.
-  //
-  // For the mention-only case (`requireMention: true`, the typical PAT-bot
-  // shape — bot can't be a channel member and only sees @-mentions),
-  // ALWAYS fetch: any number of messages may have been posted between
-  // the bot's prior mention and now, and none of them were dispatched to
-  // the agent, so the session has gaps the memo would mask.
-  //
-  // Bounded by historyLimit (default 20, server max 200). 0 disables.
-  const historyLimit = account.config.historyLimit ?? 20;
-  const historyScope = threadTimestamp !== undefined ? `thread:${threadTimestamp}` : "top";
-  const historyMemoKey = route.sessionKey ?? `chat:${chatId}`;
-  // shouldRequireMention is true only for groups; for DMs we exit before reaching here.
-  const canMemoizeHistory = isGroup && !shouldRequireMention;
-  const shouldFetchHistory =
-    isGroup &&
-    historyLimit > 0 &&
-    (!canMemoizeHistory || !hasFetchedHistoryFor(historyMemoKey, historyScope));
-  const historyFetchCfg = {
-    cfg: config,
-    accountId: account.accountId,
-    apiKey: account.apiKey,
-    apiBaseUrl: account.config.apiBaseUrl,
+  const inboundHistory = await fetchInboundHistoryContext({
+    config,
+    account,
+    runtime,
     chatId,
-    limit: historyLimit,
-  } as const;
-  const fetches: Array<Promise<RoamHistoryMessage[]>> = [];
-  if (shouldFetchHistory) {
-    fetches.push(
-      fetchRoamChatHistory(historyFetchCfg).catch((err) => {
-        runtime.error?.(
-          `roam[${account.accountId}]: chat.history (top-level) failed for chat ${chatId}: ${String(err)}`,
-        );
-        return [];
-      }),
-    );
-    if (threadTimestamp !== undefined) {
-      fetches.push(
-        fetchRoamChatHistory({ ...historyFetchCfg, threadTimestamp }).catch((err) => {
-          runtime.error?.(
-            `roam[${account.accountId}]: chat.history (thread=${threadTimestamp}) failed for chat ${chatId}: ${String(err)}`,
-          );
-          return [];
-        }),
-      );
-    }
-    if (canMemoizeHistory) {
-      recordHistoryFetched(historyMemoKey, historyScope);
-    }
-  }
-  const fetched = (await Promise.all(fetches)).flat();
-  // Dedupe by microsecond timestamp (a message that appears in both fetches
-  // — e.g. the parent surfaced in the top-level page AND echoed in the thread
-  // page — should only be delivered to the agent once). Filter out the
-  // inbound itself (already delivered as Body). Sort ascending so the agent
-  // reads chronologically.
-  const byTimestamp = new Map<number, RoamHistoryMessage>();
-  for (const entry of fetched) {
-    if (entry.timestamp === message.timestampMicros) continue;
-    byTimestamp.set(entry.timestamp, entry);
-  }
-  const inboundHistory = [...byTimestamp.values()]
-    .sort((a, b) => a.timestamp - b.timestamp)
-    .map((entry) => ({
-      sender: entry.sender,
-      body: entry.text ?? "",
-      timestamp: Math.floor(entry.timestamp / 1000),
-    }));
+    isGroup,
+    threadTimestamp,
+    shouldRequireMention,
+    sessionKey: route.sessionKey ?? `chat:${chatId}`,
+    inboundTimestampMicros: message.timestampMicros,
+  });
 
   // Download media attachments to local files so the media understanding pipeline can process them.
   let mediaPaths: string[] | undefined;
@@ -731,54 +861,15 @@ export async function handleRoamInbound(params: {
     stopTypingPulse();
     statusSink?.({ lastOutboundAt: Date.now() });
   };
-  // Thinking uses the native stream lifecycle with kind="thinking" so Roam
-  // renders it as a collapsed thought-bubble (ThinkingContent) rather than a
-  // normal chat message. `threadTimestamp` is passed through when set so the
-  // thought-bubble lives inside the same thread as the answer. Gated on the
-  // same native-streaming switch as the answer track — turning the feature
-  // OFF means reasoning content is dropped (chat.post has no equivalent).
-  const thinkingTrack = useStreaming && useNativeStreaming
-    ? createRoamThinkingStreamTrack({
-        chatId,
-        threadTimestamp,
-        accountId: account.accountId,
-        apiKey: account.apiKey,
-        onError: (msg) => runtime.error?.(`roam-stream[thinking]: ${msg}`),
-        onActivity,
-      })
-    : null;
-  // Default: chat.post + chat.update via `createRoamLiveMessageTrack` (the
-  // "draft" path — post a placeholder, then update it as tokens arrive). When
-  // the operator opts into `streaming.nativeTransport: true`, the answer
-  // streams natively via `chat.startStream` instead.
-  //
-  // Capture the most recent stream error so the fallback log can include the
-  // root cause inline (otherwise "fallback chat.post" lands in logs without
-  // context for *why* the stream failed).
-  let lastAnswerStreamError: string | undefined;
-  const recordAnswerStreamError = (label: string) => (msg: string) => {
-    lastAnswerStreamError = msg;
-    runtime.error?.(`roam-stream[${label}]: ${msg}`);
-  };
-  const answerTrack = useStreaming
-    ? useNativeStreaming
-      ? createRoamAnswerStreamTrack({
-          chatId,
-          threadTimestamp,
-          accountId: account.accountId,
-          apiKey: account.apiKey,
-          onError: recordAnswerStreamError("answer-native"),
-          onActivity,
-        })
-      : createRoamLiveMessageTrack({
-          chatId,
-          threadTimestamp,
-          accountId: account.accountId,
-          apiKey: account.apiKey,
-          onError: recordAnswerStreamError("answer"),
-          onActivity,
-        })
-    : null;
+  const { thinkingTrack, answerTrack, getLastAnswerStreamError } = createDispatchTracks({
+    chatId,
+    threadTimestamp,
+    account,
+    useStreaming,
+    useNativeStreaming,
+    onError: (msg) => runtime.error?.(msg),
+    onActivity,
+  });
   let splitReasoningOnNextStream = false;
 
   // Stop the typing pulse once we begin sending. Roam holds the typing
@@ -812,7 +903,7 @@ export async function handleRoamInbound(params: {
           ? { ...payload, text: fullText.slice(committed) }
           : payload;
       runtime.log?.(
-        `roam-stream[answer]: fallback chat.post chat=${chatId} fullLen=${fullText.length} committed=${committed} sendLen=${(payloadToSend.text ?? "").length} cause=${lastAnswerStreamError ?? "unknown"}`,
+        `roam-stream[answer]: fallback chat.post chat=${chatId} fullLen=${fullText.length} committed=${committed} sendLen=${(payloadToSend.text ?? "").length} cause=${getLastAnswerStreamError() ?? "unknown"}`,
       );
       await deliverRoamReply({
         payload: payloadToSend,
@@ -820,6 +911,8 @@ export async function handleRoamInbound(params: {
         accountId: account.accountId,
         threadTimestamp,
         statusSink,
+        log: (msg) => runtime.log?.(msg),
+        error: (msg) => runtime.error?.(msg),
       });
       return;
     }
@@ -831,6 +924,8 @@ export async function handleRoamInbound(params: {
       accountId: account.accountId,
       threadTimestamp,
       statusSink,
+      log: (msg) => runtime.log?.(msg),
+      error: (msg) => runtime.error?.(msg),
     });
   };
 

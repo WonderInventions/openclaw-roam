@@ -228,4 +228,66 @@ describe("Roam native chat streams", () => {
     expect(track.isFailed()).toBe(true);
     expect(onError).toHaveBeenCalled();
   });
+
+  it("attempts chat.stopStream when a mid-stream append fails (releases the server-side session)", async () => {
+    nextResponses.push(
+      // start OK
+      { json: { streamId: "stream-fail-1", chatId: "chat-1" } },
+      // initial append OK so we have a "live" session
+      { json: { streamId: "stream-fail-1", chatId: "chat-1" } },
+      // next append blows up
+      { status: 503, json: { error: "transient" } },
+      // stopStream cleanup
+      { json: { streamId: "stream-fail-1", chatId: "chat-1" } },
+    );
+
+    const track = createRoamAnswerStreamTrack({
+      chatId: "chat-1",
+      accountId: "default",
+      minInitialChars: 1,
+      throttleMs: 1,
+    });
+
+    // First push opens the session and sends initial text.
+    await track.pushAccumulated("hello");
+    await flushTimers();
+    // Second push triggers the failing append; markFailed fires stopStream.
+    await track.pushAccumulated("hello world");
+    await flushTimers();
+    // Extra microtask yields for the fire-and-forget cleanup chain.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    expect(track.isFailed()).toBe(true);
+    const stopCall = captured.find(
+      (c) => c.url === "http://127.0.0.1:18789/v1/chat.stopStream",
+    );
+    expect(stopCall).toBeDefined();
+    expect(stopCall!.body).toEqual({ streamId: "stream-fail-1" });
+  });
+
+  it("latches failed=true on chat.startStream failure (no replay)", async () => {
+    // Push only one mock response — the failing start. If the track tried to
+    // re-open after the first failure, it'd request more responses than we
+    // provide and the test would hit our throw-on-empty path in the harness.
+    nextResponses.push({ status: 500, json: { error: "start broke" } });
+
+    const track = createRoamAnswerStreamTrack({
+      chatId: "chat-1",
+      accountId: "default",
+      minInitialChars: 1,
+      throttleMs: 1,
+    });
+
+    await track.pushAccumulated("first attempt");
+    await flushTimers();
+    // A second push must not re-attempt startStream.
+    await track.pushAccumulated("second attempt");
+    await flushTimers();
+
+    expect(track.isFailed()).toBe(true);
+    const startCalls = captured.filter(
+      (c) => c.url === "http://127.0.0.1:18789/v1/chat.startStream",
+    );
+    expect(startCalls).toHaveLength(1);
+  });
 });
