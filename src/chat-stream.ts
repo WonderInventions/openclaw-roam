@@ -43,6 +43,12 @@ export type RoamThinkingStreamTrack = RoamNativeStreamTrack;
 
 type CreateRoamNativeStreamTrackParams = {
   chatId: string;
+  /**
+   * Microsecond parent-message timestamp. When set, the stream session is
+   * created inside that Roam thread (`chat.startStream` accepts this and the
+   * server scopes the broadcast to thread participants).
+   */
+  threadTimestamp?: number;
   accountId: string;
   apiKey?: string;
   minInitialChars?: number;
@@ -177,13 +183,17 @@ function createRoamNativeStreamTrack(
     const started = Date.now();
     // Server generates the streamId. The start request takes only chatId+kind;
     // text is sent via the first appendStream after the session is open.
+    const startBody: { chatId: string; kind: string; threadTimestamp?: number } = {
+      chatId: normalizedChatId,
+      kind: params.kind,
+    };
+    if (params.threadTimestamp !== undefined) {
+      startBody.threadTimestamp = params.threadTimestamp;
+    }
     const response = await postStreamJson<StreamProgressResponse>(
       `${apiBase}/chat.startStream`,
       apiKey,
-      {
-        chatId: normalizedChatId,
-        kind: params.kind,
-      },
+      startBody,
       `roam-chat-start-stream-${params.kind}`,
     );
     if (!response.streamId) {

@@ -195,13 +195,10 @@ Don't add Roam-internal-only behaviors to fixtures — those belong in
 - **`threadKey` is dead.** Earlier code used a string `threadKey`; the deployed
   API uses microsecond `threadTimestamp` and the two are mutually exclusive.
   Don't reintroduce `threadKey`.
-- **Native streams can't thread.** `chat.startStream` / `appendStream` /
-  `stopStream` don't accept `threadTimestamp`. The answer track falls back to
-  `chat.post` + `chat.update` when it needs to thread (`streaming.nativeTransport`
-  unset). The *thinking* track always uses the native stream lifecycle (so Roam
-  renders it as a collapsed bubble) and therefore always posts at top level,
-  even when the answer is threaded. Asymmetric but intentional; revisit if Roam
-  adds `threadTimestamp` support to the streaming endpoints.
+- **Native streams thread.** `chat.startStream` accepts `threadTimestamp` (see
+  wonder's `chat.stream.go`), and both the answer track and the thinking track
+  pass it through when set. Don't recreate the old assumption that native
+  streams are top-level only — they're not.
 - **Microseconds vs milliseconds.** Timestamps are identifiers and we treat
   them as immutable. `RoamInboundMessage` carries only `timestampMicros` (µs,
   the raw webhook value) and `threadTimestamp` (also µs). Both are passed

@@ -161,6 +161,56 @@ describe("Roam native chat streams", () => {
     expect(captured[2].url).toBe("http://127.0.0.1:18789/v1/chat.stopStream");
   });
 
+  it("includes threadTimestamp on chat.startStream when set", async () => {
+    // Native streams accept threadTimestamp (confirmed via wonder's
+    // chat.stream.go) — pass it through so streamed answers + thinking
+    // bubbles land inside the same Roam thread as the rest of the reply.
+    nextResponses.push(
+      { json: { streamId: "stream-3", chatId: "chat-3" } },
+      { json: { streamId: "stream-3", chatId: "chat-3" } },
+      { json: { streamId: "stream-3", chatId: "chat-3", timestamp: 333 } },
+    );
+
+    const track = createRoamAnswerStreamTrack({
+      chatId: "chat-3",
+      threadTimestamp: 1779381666285068,
+      accountId: "default",
+      minInitialChars: 1,
+      throttleMs: 1,
+    });
+
+    await track.pushAccumulated("inside thread");
+    await flushTimers();
+    await track.finalize();
+
+    expect(captured[0].body).toEqual({
+      chatId: "chat-3",
+      kind: "text",
+      threadTimestamp: 1779381666285068,
+    });
+  });
+
+  it("omits threadTimestamp on chat.startStream when unset (top-level)", async () => {
+    nextResponses.push(
+      { json: { streamId: "stream-4", chatId: "chat-4" } },
+      { json: { streamId: "stream-4", chatId: "chat-4" } },
+      { json: { streamId: "stream-4", chatId: "chat-4", timestamp: 444 } },
+    );
+
+    const track = createRoamAnswerStreamTrack({
+      chatId: "chat-4",
+      accountId: "default",
+      minInitialChars: 1,
+      throttleMs: 1,
+    });
+
+    await track.pushAccumulated("at top level");
+    await flushTimers();
+    await track.finalize();
+
+    expect(captured[0].body).not.toHaveProperty("threadTimestamp");
+  });
+
   it("marks the track failed when the server rejects a native stream call", async () => {
     nextResponses.push({ status: 500, json: { error: "boom" } });
     const onError = vi.fn();

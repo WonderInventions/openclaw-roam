@@ -717,11 +717,12 @@ export async function handleRoamInbound(params: {
   };
   // Thinking uses the native stream lifecycle with kind="thinking" so Roam
   // renders it as a collapsed thought-bubble (ThinkingContent) rather than a
-  // normal chat message. The stream lifecycle does not currently support
-  // threading, so thinking content is posted at the top level of the chat.
+  // normal chat message. `threadTimestamp` is passed through when set so the
+  // thought-bubble lives inside the same thread as the answer.
   const thinkingTrack = useStreaming
     ? createRoamThinkingStreamTrack({
         chatId,
+        threadTimestamp,
         accountId: account.accountId,
         apiKey: account.apiKey,
         onError: (msg) => runtime.error?.(`roam-stream[thinking]: ${msg}`),
@@ -742,6 +743,7 @@ export async function handleRoamInbound(params: {
     ? allowNativeAnswerTransport
       ? createRoamAnswerStreamTrack({
           chatId,
+          threadTimestamp,
           accountId: account.accountId,
           apiKey: account.apiKey,
           onError: recordAnswerStreamError("answer-native"),
