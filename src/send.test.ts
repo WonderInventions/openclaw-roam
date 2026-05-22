@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { sendMessageRoam, sendTypingRoam } from "./send.js";
+import { sendMessageRoam, sendTypingRoam, uploadItemRoam } from "./send.js";
+
+const mockFetchRemoteMedia = vi.fn();
+vi.mock("openclaw/plugin-sdk/media-runtime", () => ({
+  MAX_IMAGE_BYTES: 10_000_000,
+  fetchRemoteMedia: (...args: unknown[]) => mockFetchRemoteMedia(...args),
+}));
 
 const { mockResolveRoamAccount } = vi.hoisted(() => ({
   mockResolveRoamAccount: vi.fn(),
@@ -198,8 +204,121 @@ describe("sendTypingRoam", () => {
     expect(body.chatId).toBe("chat-1");
   });
 
-  it("swallows fetch errors", async () => {
+  it("rejects on transport failure so callers can log it", async () => {
+    // sendTypingRoam used to swallow fetch errors internally, which made the
+    // caller's `.catch(logTypingFailure)` dead code. Now it propagates.
     mockFetchInner.mockRejectedValueOnce(new Error("network error"));
-    await expect(sendTypingRoam("chat-1")).resolves.toBeUndefined();
+    await expect(sendTypingRoam("chat-1")).rejects.toThrow("network error");
+  });
+
+  it("rejects on HTTP error status", async () => {
+    mockFetchInner.mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      text: async () => "bad gateway",
+    });
+    await expect(sendTypingRoam("chat-1")).rejects.toThrow(/chat.typing failed \(502\)/);
+  });
+});
+
+describe("uploadItemRoam", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockResolveRoamAccount.mockReturnValue(defaultAccount());
+  });
+
+  it("fetches the remote URL, POSTs to /v1/item.upload with Content-Disposition, returns the itemId", async () => {
+    mockFetchRemoteMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("imgbytes"),
+      contentType: "image/png",
+    });
+    mockFetchInner.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: "item-abc", mime: "image/png" }),
+    });
+
+    const result = await uploadItemRoam("https://cdn.example.com/path/to/cat.png");
+
+    expect(mockFetchRemoteMedia).toHaveBeenCalledWith({
+      url: "https://cdn.example.com/path/to/cat.png",
+      maxBytes: 10_000_000,
+    });
+    expect(mockFetchInner).toHaveBeenCalledOnce();
+    const [url, opts] = mockFetchInner.mock.calls[0];
+    expect(url).toBe("https://api.ro.am/v1/item.upload");
+    expect(opts.method).toBe("POST");
+    expect(opts.headers.Authorization).toBe("Bearer test-api-key");
+    expect(opts.headers["Content-Type"]).toBe("image/png");
+    expect(opts.headers["Content-Disposition"]).toBe('attachment; filename="cat.png"');
+    expect(result).toEqual({ itemId: "item-abc", mimeType: "image/png" });
+  });
+
+  it("derives a filename from the content-type when the URL has no extension", async () => {
+    mockFetchRemoteMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("imgbytes"),
+      contentType: "image/jpeg",
+    });
+    mockFetchInner.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: "item-xyz" }),
+    });
+
+    await uploadItemRoam("https://cdn.example.com/items/12345");
+
+    const opts = mockFetchInner.mock.calls[0][1];
+    expect(opts.headers["Content-Disposition"]).toBe('attachment; filename="12345.jpg"');
+  });
+
+  it("rejects when item.upload returns no id", async () => {
+    mockFetchRemoteMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("x"),
+      contentType: "image/png",
+    });
+    mockFetchInner.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+
+    await expect(uploadItemRoam("https://cdn.example.com/x.png")).rejects.toThrow(
+      /no item id/,
+    );
+  });
+
+  it("rejects on HTTP error status", async () => {
+    mockFetchRemoteMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("x"),
+      contentType: "image/png",
+    });
+    mockFetchInner.mockResolvedValueOnce({
+      ok: false,
+      status: 413,
+      text: async () => "too large",
+    });
+
+    await expect(uploadItemRoam("https://cdn.example.com/big.png")).rejects.toThrow(
+      /item.upload failed \(413\)/,
+    );
+  });
+});
+
+describe("sendMessageRoam — items attachment", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockResolveRoamAccount.mockReturnValue(defaultAccount());
+    mockFetchInner.mockResolvedValue({
+      ok: true,
+      json: async () => ({ chat: "chat-1", timestamp: 1000 }),
+    });
+  });
+
+  it("passes items through to the chat.post body when provided", async () => {
+    await sendMessageRoam("chat-1", "see attached", { items: ["item-1"] });
+    const body = JSON.parse(mockFetchInner.mock.calls[0][1].body);
+    expect(body.items).toEqual(["item-1"]);
+  });
+
+  it("allows an empty text body when items are present (real attachment, no caption)", async () => {
+    // Caller may want to send just an image with no caption — previously
+    // sendMessageRoam threw on empty text.
+    await expect(
+      sendMessageRoam("chat-1", "", { items: ["item-1"] }),
+    ).resolves.toBeDefined();
   });
 });

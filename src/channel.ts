@@ -28,11 +28,12 @@ import {
 } from "./accounts.js";
 import { RoamConfigSchema } from "./config-schema.js";
 import { exportRoamApiKeyToEnv } from "./env-export.js";
+import { readRoamMetrics } from "./metrics.js";
 import { monitorRoamProvider } from "./monitor.js";
 import { looksLikeRoamTargetId, normalizeRoamMessagingTarget } from "./normalize.js";
 import { resolveRoamGroupToolPolicy } from "./policy.js";
 import { getRoamRuntime } from "./runtime.js";
-import { sendMessageRoam } from "./send.js";
+import { sendMessageRoam, uploadItemRoam } from "./send.js";
 import { resolveRoamOutboundSessionRoute } from "./session-route.js";
 import { roamSetupAdapter } from "./setup-core.js";
 import { roamSetupWizard } from "./setup-surface.js";
@@ -41,7 +42,10 @@ import type { CoreConfig } from "./types.js";
 function coerceThreadTimestamp(threadId: string | number | null | undefined): number | undefined {
   if (threadId === null || threadId === undefined) return undefined;
   const n = typeof threadId === "number" ? threadId : Number(threadId);
-  return Number.isFinite(n) ? n : undefined;
+  // Roam expects µs since epoch; only positive finite numbers are valid.
+  // `Number("")` is 0, `Number("abc")` is NaN — both must round-trip to
+  // undefined so we don't send `threadTimestamp: 0` and trigger a 400.
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 const meta = {
@@ -189,15 +193,26 @@ export const roamPlugin: ChannelPlugin<ResolvedRoamAccount> = {
         return { messageId: result.chatId };
       },
       sendMedia: async ({ cfg, to, text, mediaUrl, accountId, threadId }) => {
-        const result = await sendMessageRoam(
-          to,
-          mediaUrl ? `${text}\n\nAttachment: ${mediaUrl}` : text,
-          {
-            accountId: accountId ?? undefined,
-            cfg: cfg as CoreConfig,
-            threadTimestamp: coerceThreadTimestamp(threadId),
-          },
-        );
+        // Upload the media via /v1/item.upload first so the user sees a real
+        // attachment (image preview, downloadable file) instead of a raw URL
+        // in the message body. The previous behavior — inlining `mediaUrl` as
+        // text — looked like the agent had attached something but the user
+        // got a paste-able link.
+        //
+        // Roam's chat.startStream endpoint doesn't support attachments, so
+        // media payloads ALWAYS take the chat.post path (handled upstream
+        // in `deliverRoamReply`).
+        const sendOpts = {
+          accountId: accountId ?? undefined,
+          cfg: cfg as CoreConfig,
+          threadTimestamp: coerceThreadTimestamp(threadId),
+        };
+        if (mediaUrl) {
+          const { itemId } = await uploadItemRoam(mediaUrl, sendOpts);
+          const result = await sendMessageRoam(to, text, { ...sendOpts, items: [itemId] });
+          return { messageId: result.chatId };
+        }
+        const result = await sendMessageRoam(to, text, sendOpts);
         return { messageId: result.chatId };
       },
     }),
@@ -219,6 +234,10 @@ export const roamPlugin: ChannelPlugin<ResolvedRoamAccount> = {
         lastStartAt: base.lastStartAt,
         lastStopAt: base.lastStopAt,
         lastError: base.lastError,
+        // Plugin-internal drop/dispatch counters (see src/metrics.ts). The
+        // status UI can surface these so operators don't have to grep logs
+        // to answer "how many messages did the bot drop today and why?"
+        metrics: readRoamMetrics(),
       };
     },
     buildAccountSnapshot: ({ account, runtime }) => {

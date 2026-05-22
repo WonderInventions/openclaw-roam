@@ -1,3 +1,4 @@
+import { MAX_IMAGE_BYTES, fetchRemoteMedia } from "openclaw/plugin-sdk/media-runtime";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { resolveRoamAccount } from "./accounts.js";
 import { resolveApiBase } from "./api-base.js";
@@ -10,6 +11,11 @@ type RoamSendOpts = {
   accountId?: string;
   /** Microsecond parent-message timestamp; posts into the same Roam thread. */
   threadTimestamp?: number;
+  /**
+   * Item IDs to attach to the message (from a prior `/v1/item.upload`).
+   * Roam renders these inline as images/files alongside the text.
+   */
+  items?: string[];
   cfg?: CoreConfig;
 };
 
@@ -68,7 +74,8 @@ export async function sendMessageRoam(
   const { cfg, account, apiKey } = resolveRoamSendContext(opts);
   const chatId = normalizeChatId(to);
 
-  if (!text?.trim()) {
+  const hasItems = (opts.items?.length ?? 0) > 0;
+  if (!text?.trim() && !hasItems) {
     throw new Error("Message must be non-empty for Roam sends");
   }
 
@@ -87,6 +94,9 @@ export async function sendMessageRoam(
   };
   if (opts.threadTimestamp !== undefined) {
     body.threadTimestamp = opts.threadTimestamp;
+  }
+  if (hasItems) {
+    body.items = opts.items;
   }
 
   const apiBase = resolveApiBase(cfg, account.config.apiBaseUrl);
@@ -289,7 +299,112 @@ export async function updateMessageRoam(
   return { chatId: responseChatId, timestamp: responseTimestamp };
 }
 
-/** Send a typing indicator to a Roam chat. Best-effort; failures are swallowed. */
+/**
+ * Derive a filename from a URL's path. Falls back to a generic name when the
+ * URL has no useful tail segment. Roam requires `Content-Disposition` with a
+ * filename on item.upload.
+ */
+function filenameFromUrl(url: string, contentType: string): string {
+  try {
+    const path = new URL(url).pathname;
+    const last = path.split("/").filter(Boolean).pop();
+    if (last && last.includes(".")) return last;
+    if (last) return contentTypeFilename(last, contentType);
+  } catch {
+    // fall through to default
+  }
+  return contentTypeFilename("attachment", contentType);
+}
+
+function contentTypeFilename(base: string, contentType: string): string {
+  const ext = contentType === "image/jpeg" ? "jpg"
+    : contentType === "image/png" ? "png"
+    : contentType === "image/gif" ? "gif"
+    : contentType === "image/webp" ? "webp"
+    : contentType === "application/pdf" ? "pdf"
+    : "bin";
+  return `${base}.${ext}`;
+}
+
+/**
+ * Upload a remote URL's bytes to Roam's `/v1/item.upload` and return the
+ * resulting itemId. Pass that itemId in `sendMessageRoam`'s `items` option to
+ * attach the upload to a chat message.
+ *
+ * - SSRF-bounded fetch via the SDK's `fetchRemoteMedia` (same path the inbound
+ *   media-download pipeline uses).
+ * - Content-Type comes from the fetched response; filename is derived from the
+ *   URL path (or synthesized from the content-type as a fallback).
+ * - Size cap: `MAX_IMAGE_BYTES` (matches the SDK default and Roam's 10MB cap).
+ *
+ * Native streaming (`chat.startStream`) doesn't support attachments, so callers
+ * that want to send media must use the chat.post path (which is what
+ * `deliverRoamReply` always does for media payloads).
+ */
+export async function uploadItemRoam(
+  mediaUrl: string,
+  opts: RoamSendOpts = {},
+): Promise<{ itemId: string; mimeType?: string }> {
+  const { cfg, account, apiKey } = resolveRoamSendContext(opts);
+  const apiBase = resolveApiBase(cfg, account.config.apiBaseUrl);
+  const logger = getRoamRuntime().logging.getChildLogger({
+    channel: "roam",
+    accountId: account.accountId,
+  });
+
+  // 1. Fetch the source bytes via the SSRF-guarded media helper.
+  const fetched = await fetchRemoteMedia({ url: mediaUrl, maxBytes: MAX_IMAGE_BYTES });
+  const contentType = fetched.contentType ?? "application/octet-stream";
+  const filename = filenameFromUrl(mediaUrl, contentType);
+
+  // 2. POST to /v1/item.upload with the bytes. Roam requires Content-Type +
+  //    Content-Disposition: attachment; filename=...
+  const startedAt = Date.now();
+  logger.info(
+    `[roam-send] item.upload req bytes=${fetched.buffer.length} mime=${contentType} filename=${filename}`,
+  );
+  const { response, release } = await fetchWithSsrFGuard({
+    url: `${apiBase}/item.upload`,
+    init: {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": contentType,
+        "Content-Disposition": `attachment; filename="${filename.replace(/["\\\r\n]/g, "_")}"`,
+      },
+      // Buffer is a Uint8Array; cast through Uint8Array for the BodyInit type
+      // (Buffer's extra methods make TS reject the direct assignment).
+      body: new Uint8Array(fetched.buffer),
+    },
+    auditContext: "roam-item-upload",
+  });
+  try {
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      logger.warn(
+        `[roam-send] item.upload FAIL status=${response.status} dt=${Date.now() - startedAt}ms${responseTraceTail(response)} body=${errorBody.slice(0, 200)}`,
+      );
+      throw new Error(`Roam item.upload failed (${response.status}): ${errorBody.slice(0, 200)}`);
+    }
+    const data = (await response.json()) as { id?: string; mime?: string };
+    if (!data.id) {
+      throw new Error("Roam item.upload returned no item id");
+    }
+    logger.info(
+      `[roam-send] item.upload OK  id=${data.id} mime=${data.mime ?? contentType} dt=${Date.now() - startedAt}ms`,
+    );
+    return { itemId: data.id, mimeType: data.mime ?? contentType };
+  } finally {
+    await release();
+  }
+}
+
+/**
+ * Send a typing indicator to a Roam chat. The promise rejects on failure so
+ * the caller's `.catch` (typically `logTypingFailure`) actually fires — the
+ * indicator itself is non-critical, but losing visibility into repeated
+ * typing failures masks real auth / network issues.
+ */
 export async function sendTypingRoam(
   chatId: string,
   opts: RoamSendOpts = {},
@@ -303,7 +418,7 @@ export async function sendTypingRoam(
     body.threadTimestamp = opts.threadTimestamp;
   }
 
-  await fetchWithSsrFGuard({
+  const { response, release } = await fetchWithSsrFGuard({
     url: `${apiBase}/chat.typing`,
     init: {
       method: "POST",
@@ -314,9 +429,12 @@ export async function sendTypingRoam(
       body: JSON.stringify(body),
     },
     auditContext: "roam-chat-typing",
-  })
-    .then(({ release }) => release())
-    .catch(() => {
-      // Typing indicator failure is non-critical.
-    });
+  });
+  try {
+    if (!response.ok) {
+      throw new Error(`Roam chat.typing failed (${response.status})`);
+    }
+  } finally {
+    await release();
+  }
 }
