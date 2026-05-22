@@ -173,9 +173,41 @@ function createRoamNativeStreamTrack(
     failed = true;
     logEvent(`FAIL ${reason}`);
     params.onError?.(reason);
+    // Best-effort: if we had a live server-side session, close it so it
+    // doesn't linger after the track gave up. Errors here are intentionally
+    // swallowed — the track is already failed; we just want to release the
+    // streamId, not produce more errors.
+    if (session && !session.stopped) {
+      const dyingSession = session;
+      const { apiBase, apiKey } = resolveNativeStreamContext(params);
+      // Fire and forget. lastSentText guards against the "no content" 400.
+      const stopBody: { streamId: string } = { streamId: dyingSession.streamId };
+      postStreamJson<StreamStopResponse>(
+        `${apiBase}/chat.stopStream`,
+        apiKey,
+        stopBody,
+        `roam-chat-stop-stream-${params.kind}`,
+      )
+        .then(() => {
+          logEvent(
+            `stop-on-fail OK chat=${dyingSession.chatId} stream=${dyingSession.streamId}`,
+          );
+        })
+        .catch((err) => {
+          logEvent(
+            `stop-on-fail err chat=${dyingSession.chatId} stream=${dyingSession.streamId} err=${String(err)}`,
+          );
+        });
+      dyingSession.stopped = true;
+    }
   };
 
   const ensureSession = async (text: string): Promise<void> => {
+    if (failed) {
+      // Latched failure from a prior start/append. Don't replay chat.startStream
+      // — that would create a second half-started stream on the server.
+      throw new Error("stream track is failed; refusing to re-open");
+    }
     if (session) {
       return;
     }
@@ -190,13 +222,23 @@ function createRoamNativeStreamTrack(
     if (params.threadTimestamp !== undefined) {
       startBody.threadTimestamp = params.threadTimestamp;
     }
-    const response = await postStreamJson<StreamProgressResponse>(
-      `${apiBase}/chat.startStream`,
-      apiKey,
-      startBody,
-      `roam-chat-start-stream-${params.kind}`,
-    );
+    let response: StreamProgressResponse;
+    try {
+      response = await postStreamJson<StreamProgressResponse>(
+        `${apiBase}/chat.startStream`,
+        apiKey,
+        startBody,
+        `roam-chat-start-stream-${params.kind}`,
+      );
+    } catch (err) {
+      // Latch failed so subsequent pushAccumulated calls short-circuit
+      // instead of re-attempting startStream (which would proliferate
+      // half-started streams on the server).
+      markFailed(`start failed: ${String(err)}`);
+      throw err;
+    }
     if (!response.streamId) {
+      markFailed("chat.startStream did not return a streamId");
       throw new Error("chat.startStream did not return a streamId");
     }
     session = {

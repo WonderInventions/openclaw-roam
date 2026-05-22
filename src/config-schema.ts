@@ -8,6 +8,33 @@ import {
 } from "../runtime-api.js";
 import { buildSecretInputSchema } from "./secret-input.js";
 
+/**
+ * URL schema that accepts HTTPS unconditionally and HTTP only for loopback
+ * (localhost / 127.0.0.1). Used for both `apiBaseUrl` (we → Roam, Bearer
+ * token in cleartext if http) and `webhookUrl` (Roam → us, signing header in
+ * cleartext if http).
+ */
+function httpsUrlOrLocalhost(fieldName: string) {
+  return z
+    .string()
+    .url()
+    .refine(
+      (v) => {
+        try {
+          const u = new URL(v);
+          if (u.protocol === "https:") return true;
+          if (u.protocol !== "http:") return false;
+          return u.hostname === "localhost" || u.hostname === "127.0.0.1";
+        } catch {
+          return false;
+        }
+      },
+      {
+        message: `${fieldName} must be https:// (http:// is only allowed for localhost / 127.0.0.1)`,
+      },
+    );
+}
+
 const RoamStreamingSchema = z
   .object({
     mode: z.enum(["off", "partial"]).optional(),
@@ -41,31 +68,17 @@ export const RoamAccountSchemaBase = z
     groupPolicy: GroupPolicySchema.optional().default("open"),
     groups: z.record(z.string(), RoamGroupSchema.optional()).optional(),
     webhookPath: z.string().optional(),
-    apiBaseUrl: z
+    apiBaseUrl: httpsUrlOrLocalhost("apiBaseUrl").optional(),
+    webhookUrl: httpsUrlOrLocalhost("webhookUrl").optional(),
+    webhookSecret: z
       .string()
-      .url()
-      .refine(
-        (v) => {
-          // Allow only HTTPS in prod. Plaintext HTTP is fine for loopback dev
-          // (localhost / 127.0.0.1) — the API key never leaves the host. Any
-          // other http:// would send the Bearer token in cleartext.
-          try {
-            const u = new URL(v);
-            if (u.protocol === "https:") return true;
-            if (u.protocol !== "http:") return false;
-            return u.hostname === "localhost" || u.hostname === "127.0.0.1";
-          } catch {
-            return false;
-          }
-        },
-        {
-          message:
-            "apiBaseUrl must be https:// (http:// is only allowed for localhost / 127.0.0.1)",
-        },
-      )
+      .refine((v) => v.startsWith("whsec_"), {
+        // Roam's signing secrets are `whsec_<base64>`. A non-prefixed value is
+        // almost always a paste error (e.g. an API key in the wrong field) and
+        // would silently fail every signature check at runtime.
+        message: 'webhookSecret must start with "whsec_" (the value Roam admin shows on token create)',
+      })
       .optional(),
-    webhookUrl: z.string().optional(),
-    webhookSecret: z.string().optional(),
     streaming: RoamStreamingSchema,
     ...ReplyRuntimeConfigSchemaShape,
   })

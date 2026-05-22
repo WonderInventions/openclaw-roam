@@ -100,4 +100,32 @@ describe("RoamConfigSchema", () => {
     const result = RoamConfigSchema.safeParse({ apiBaseUrl: "http://127.0.0.1:8080" });
     expect(result.success).toBe(true);
   });
+
+  it("rejects a non-HTTPS webhookUrl (would leak the signing header)", () => {
+    const result = RoamConfigSchema.safeParse({
+      webhookUrl: "http://prod.example.com/roam-webhook",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts an HTTPS webhookUrl", () => {
+    const result = RoamConfigSchema.safeParse({
+      webhookUrl: "https://prod.example.com/roam-webhook",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects webhookSecret without the whsec_ prefix (probably a paste error)", () => {
+    const result = RoamConfigSchema.safeParse({
+      webhookSecret: "rmk-this-looks-like-an-api-key",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a properly-prefixed webhookSecret", () => {
+    const result = RoamConfigSchema.safeParse({
+      webhookSecret: "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw",
+    });
+    expect(result.success).toBe(true);
+  });
 });
