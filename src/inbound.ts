@@ -700,9 +700,11 @@ export async function handleRoamInbound(params: {
 
   const previewMode = resolveChannelPreviewStreamMode(account.config, "partial");
   const nativeTransport = resolveChannelStreamingNativeTransport(account.config);
-  // Native streaming is supported on `api.ro.am` since the Streaming API merge,
-  // so `nativeTransport: true` is sufficient — no need to gate by host.
-  const allowNativeAnswerTransport = nativeTransport === true;
+  // Native streaming (chat.startStream / appendStream / stopStream) is a beta
+  // opt-in. The default uses chat.post + chat.update for the answer and skips
+  // thinking content entirely — chat.post has no thought-bubble equivalent.
+  // Set `channels.roam.streaming.nativeTransport: true` to enable both lanes.
+  const useNativeStreaming = nativeTransport === true;
   const useStreaming = previewMode === "partial" && account.apiKey.length > 0;
 
   // `onActivity` fires when a track actually sends to Roam (chat.post or
@@ -718,8 +720,10 @@ export async function handleRoamInbound(params: {
   // Thinking uses the native stream lifecycle with kind="thinking" so Roam
   // renders it as a collapsed thought-bubble (ThinkingContent) rather than a
   // normal chat message. `threadTimestamp` is passed through when set so the
-  // thought-bubble lives inside the same thread as the answer.
-  const thinkingTrack = useStreaming
+  // thought-bubble lives inside the same thread as the answer. Gated on the
+  // same native-streaming switch as the answer track — turning the feature
+  // OFF means reasoning content is dropped (chat.post has no equivalent).
+  const thinkingTrack = useStreaming && useNativeStreaming
     ? createRoamThinkingStreamTrack({
         chatId,
         threadTimestamp,
@@ -729,8 +733,11 @@ export async function handleRoamInbound(params: {
         onActivity,
       })
     : null;
-  // Native streaming is enabled when `streaming.nativeTransport: true`. Falls
-  // back to the draft `chat.post` + `chat.update` path otherwise.
+  // Default: chat.post + chat.update via `createRoamLiveMessageTrack` (the
+  // "draft" path — post a placeholder, then update it as tokens arrive). When
+  // the operator opts into `streaming.nativeTransport: true`, the answer
+  // streams natively via `chat.startStream` instead.
+  //
   // Capture the most recent stream error so the fallback log can include the
   // root cause inline (otherwise "fallback chat.post" lands in logs without
   // context for *why* the stream failed).
@@ -740,7 +747,7 @@ export async function handleRoamInbound(params: {
     runtime.error?.(`roam-stream[${label}]: ${msg}`);
   };
   const answerTrack = useStreaming
-    ? allowNativeAnswerTransport
+    ? useNativeStreaming
       ? createRoamAnswerStreamTrack({
           chatId,
           threadTimestamp,

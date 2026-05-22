@@ -81,34 +81,55 @@ request and rejects invalid or stale signatures. Startup fails fast if
 
 ## Streaming
 
-Two paths, configurable per account via `streaming.nativeTransport`:
+The default delivers replies via `chat.post` + `chat.update` (a "draft" path):
+the reply opens with one `chat.post`, then edits in place via repeated
+`chat.update` calls (Telegram-style edit-in-place), throttled to ~1 update/sec.
+Splits across multiple Roam messages when content crosses the 8 KB byte cap.
+This is the recommended path for most operators.
 
-- **Default (`nativeTransport` unset/false): draft path.** Reply opens with one
-  `chat.post`, then edits in place via repeated `chat.update` calls (Telegram-
-  style edit-in-place). Throttled to ~1 update/sec. Splits across multiple Roam
-  messages when content crosses the 8 KB byte cap.
-- **Native (`nativeTransport: true`): three-call lifecycle.**
-  `chat.startStream` opens a server-tracked stream (server assigns
-  `streamId`); each accumulated text snapshot is pushed via
-  `chat.appendStream` with `snapshot: true`; `chat.stopStream` freezes the
-  final message. Both `kind: "text"` (answer) and `kind: "thinking"`
-  (reasoning) use this lifecycle.
+### Native streaming (beta opt-in)
 
-Disable streaming entirely:
+Set `streaming.nativeTransport: true` to switch to Roam's `chat.startStream` /
+`chat.appendStream` / `chat.stopStream` lifecycle:
+
+```json5
+{
+  channels: {
+    roam: {
+      streaming: { nativeTransport: true },
+    },
+  },
+}
+```
+
+What you get:
+
+- **Lower latency to first byte** on the answer, since the server tracks the
+  stream rather than each update being a separate request/response.
+- **Reasoning rendered as a collapsed "thinking" bubble** (`kind: "thinking"`),
+  visually separated from the answer. With native streaming off, reasoning
+  content is dropped — `chat.post` has no thought-bubble equivalent.
+
+What stays the same:
+
+- Both lanes (answer + thinking) accept `threadTimestamp`, so threaded
+  replies remain threaded under either path.
+- If a native send fails mid-stream the plugin falls back to `chat.post` for
+  the residual answer; thinking content is dropped.
+
+Disable streaming entirely (no native, no draft edits — single `chat.post`
+per reply):
 
 ```json5
 { channels: { roam: { streaming: { mode: "off" } } } }
 ```
 
-The reasoning/thinking lane always uses the native lifecycle with
-`kind: "thinking"` so Roam renders it as a collapsed thought-bubble.
-
 ## Typing indicator
 
 Pulses `chat.typing` immediately on inbound webhook arrival (before
-agent setup), then re-pulses every 2s while the agent runs. Cancels on the
-first partial reply token (or on first `chat.post` if streaming is off) so the
-indicator clears before the message text appears, not after.
+agent setup), then re-pulses every 2s while the agent runs. Stops on the
+first successful send (whether `chat.post` or `chat.startStream`) so the
+indicator clears the moment the message appears, not before.
 
 ## Access control, multi-account, full reference
 

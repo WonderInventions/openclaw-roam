@@ -151,18 +151,27 @@ fixtures assert zero API calls on drop paths — don't move the
 
 ## Streaming
 
-Two transports for the answer:
+**Default path: chat.post + chat.update.** Out of the box the answer streams
+into a single Roam message via `chat.post` (placeholder) → `chat.update`
+(grow). Reasoning content is dropped — `chat.post` has no thought-bubble
+equivalent.
 
-- **Native** (`streaming.nativeTransport: true`): `chat.startStream` →
-  `appendStream` → `stopStream`. No threading support.
-- **Live-message fallback**: post a placeholder via `chat.post`, then `chat.update`
-  to grow the message. Supports threading. Used when native is off or in the
-  fallback path after a stream failure.
+**Beta opt-in: native streaming.** Set `channels.roam.streaming.nativeTransport: true`
+to switch to `chat.startStream` → `appendStream` → `stopStream` for *both*
+tracks:
 
-Reasoning ("thinking") always uses the native stream lifecycle with
-`kind: "thinking"` so Roam renders it as a collapsed thought bubble, separate
-from the answer. The two tracks (`thinkingTrack`, `answerTrack`) are created
-independently and finalized in the `finally`.
+- **Answer** (`kind: "text"`) streams into a single message, same visual
+  outcome as the default but with lower latency to first byte.
+- **Thinking** (`kind: "thinking"`) renders as a collapsed thought-bubble
+  separate from the answer.
+
+Both kinds accept `threadTimestamp` (server-side: see wonder
+`chat.stream.go:74`), so threaded replies remain threaded under either path.
+If a native send fails mid-stream the plugin falls back to `chat.post` for
+the residual answer content; thinking content is simply lost.
+
+`useNativeStreaming` in `inbound.ts` is the single gate. Don't conditionally
+enable one lane and not the other — the beta is "all or nothing."
 
 ## Contract fixtures
 
@@ -195,10 +204,6 @@ Don't add Roam-internal-only behaviors to fixtures — those belong in
 - **`threadKey` is dead.** Earlier code used a string `threadKey`; the deployed
   API uses microsecond `threadTimestamp` and the two are mutually exclusive.
   Don't reintroduce `threadKey`.
-- **Native streams thread.** `chat.startStream` accepts `threadTimestamp` (see
-  wonder's `chat.stream.go`), and both the answer track and the thinking track
-  pass it through when set. Don't recreate the old assumption that native
-  streams are top-level only — they're not.
 - **Microseconds vs milliseconds.** Timestamps are identifiers and we treat
   them as immutable. `RoamInboundMessage` carries only `timestampMicros` (µs,
   the raw webhook value) and `threadTimestamp` (also µs). Both are passed
