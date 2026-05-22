@@ -46,7 +46,7 @@ const {
   mockReadStoreAllowFrom: vi.fn().mockResolvedValue([]),
   mockLogInboundDrop: vi.fn(),
   mockLogTypingFailure: vi.fn(),
-  mockResolveDmGroupAccessWithCommandGate: vi.fn(() => ({
+  mockResolveDmGroupAccessWithCommandGate: vi.fn((_params: Record<string, unknown>) => ({
     decision: "allow",
     reason: "open",
     commandAuthorized: true,
