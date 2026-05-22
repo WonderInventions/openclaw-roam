@@ -41,7 +41,29 @@ export const RoamAccountSchemaBase = z
     groupPolicy: GroupPolicySchema.optional().default("open"),
     groups: z.record(z.string(), RoamGroupSchema.optional()).optional(),
     webhookPath: z.string().optional(),
-    apiBaseUrl: z.string().optional(),
+    apiBaseUrl: z
+      .string()
+      .url()
+      .refine(
+        (v) => {
+          // Allow only HTTPS in prod. Plaintext HTTP is fine for loopback dev
+          // (localhost / 127.0.0.1) — the API key never leaves the host. Any
+          // other http:// would send the Bearer token in cleartext.
+          try {
+            const u = new URL(v);
+            if (u.protocol === "https:") return true;
+            if (u.protocol !== "http:") return false;
+            return u.hostname === "localhost" || u.hostname === "127.0.0.1";
+          } catch {
+            return false;
+          }
+        },
+        {
+          message:
+            "apiBaseUrl must be https:// (http:// is only allowed for localhost / 127.0.0.1)",
+        },
+      )
+      .optional(),
     webhookUrl: z.string().optional(),
     webhookSecret: z.string().optional(),
     streaming: RoamStreamingSchema,

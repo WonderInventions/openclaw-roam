@@ -78,4 +78,26 @@ describe("RoamConfigSchema", () => {
     const result = RoamConfigSchema.safeParse({ groupPolicy: "allowlist" });
     expect(result.success).toBe(true);
   });
+
+  it("rejects a non-HTTPS apiBaseUrl (would leak the bearer token)", () => {
+    const result = RoamConfigSchema.safeParse({
+      apiBaseUrl: "http://api.example.com",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an unparseable apiBaseUrl", () => {
+    const result = RoamConfigSchema.safeParse({ apiBaseUrl: "not a url" });
+    expect(result.success).toBe(false);
+  });
+
+  it("allows http://localhost (dev convenience)", () => {
+    const result = RoamConfigSchema.safeParse({ apiBaseUrl: "http://localhost:8080" });
+    expect(result.success).toBe(true);
+  });
+
+  it("allows http://127.0.0.1 (dev convenience)", () => {
+    const result = RoamConfigSchema.safeParse({ apiBaseUrl: "http://127.0.0.1:8080" });
+    expect(result.success).toBe(true);
+  });
 });

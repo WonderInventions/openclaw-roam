@@ -205,6 +205,37 @@ describe("monitorRoamProvider", () => {
     );
   });
 
+  it("refuses to start a PAT bot (rmp- prefix) when token.info keeps failing", async () => {
+    // PATs depend on the owner-only filter for security; without an ownerId
+    // the bot would respond to anyone. Fail-closed is safer than degrading.
+    mockResolveRoamAccount.mockReturnValue(defaultAccount({ apiKey: "rmp-abc123" }));
+    mockFetchInner.mockResolvedValue({ ok: false, status: 500 });
+
+    await expect(monitorRoamProvider({})).rejects.toThrow(
+      /Personal Access Token but token.info failed/,
+    );
+  });
+
+  it("retries token.info before giving up", async () => {
+    // First two attempts fail, third succeeds — the warning-then-recover path.
+    mockResolveRoamAccount.mockReturnValue(defaultAccount({ apiKey: "rmk-orgkey" }));
+    mockFetchInner
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ user: { id: "u", name: "n" } }),
+      });
+
+    const { stop } = await monitorRoamProvider({});
+    stop();
+
+    const tokenInfoCalls = mockFetchInner.mock.calls.filter(([url]: string[]) =>
+      url.includes("token.info"),
+    );
+    expect(tokenInfoCalls).toHaveLength(3);
+  });
+
   it("subscribes webhooks when webhookUrl is configured", async () => {
     mockResolveRoamAccount.mockReturnValue(
       defaultAccount({
@@ -371,7 +402,13 @@ describe("monitorRoamProvider", () => {
         },
       }),
     );
-    mockFetchInner.mockResolvedValue({ ok: true, json: async () => ({}) });
+    // Return a valid identity so the token.info retry path doesn't fire and
+    // pad the test with 3s of sleeps. The assertion below only cares about
+    // the URL, not the body shape.
+    mockFetchInner.mockResolvedValue({
+      ok: true,
+      json: async () => ({ user: { id: "u", name: "n" } }),
+    });
 
     const { stop } = await monitorRoamProvider({ config: cfg });
     stop();
@@ -498,6 +535,45 @@ describe("verifyStandardWebhookSignature", () => {
     );
 
     expect(result).toBe(false);
+  });
+
+  it("rejects a wrong-length signature without throwing (timingSafeEqual requires equal lengths)", () => {
+    const msgId = "msg_abc123";
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const body = '{"type":"message"}';
+
+    // 4 raw bytes vs HMAC-SHA256's 32 — must short-circuit, not crash.
+    const result = verifyStandardWebhookSignature(
+      secret,
+      {
+        "webhook-id": msgId,
+        "webhook-timestamp": timestamp,
+        "webhook-signature": "v1,AAAA",
+      },
+      body,
+    );
+
+    expect(result).toBe(false);
+  });
+
+  it("accepts a valid signature when multiple space-separated candidates are sent", () => {
+    const msgId = "msg_abc123";
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const body = '{"type":"message"}';
+
+    const valid = signPayload(msgId, timestamp, body);
+    const result = verifyStandardWebhookSignature(
+      secret,
+      {
+        "webhook-id": msgId,
+        "webhook-timestamp": timestamp,
+        // Roam may send multiple v1 candidates separated by space; any match wins.
+        "webhook-signature": `v1,AAAA ${valid}`,
+      },
+      body,
+    );
+
+    expect(result).toBe(true);
   });
 
   it("rejects when headers are missing", () => {

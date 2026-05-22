@@ -71,7 +71,6 @@ function resolveRoamApiKey(
   cfg: CoreConfig,
   opts: { accountId?: string },
 ): { apiKey: string; source: ResolvedRoamAccount["apiKeySource"] } {
-  const merged = mergeRoamAccountConfig(cfg, opts.accountId ?? DEFAULT_ACCOUNT_ID);
   const accountId = opts.accountId ?? DEFAULT_ACCOUNT_ID;
 
   // Per-account env override (e.g. ROAM_API_KEY_ORG for accounts.org). Checked
