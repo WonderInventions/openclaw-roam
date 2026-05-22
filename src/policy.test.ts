@@ -113,35 +113,39 @@ describe("resolveRoamGroupSystemPrompt", () => {
 });
 
 describe("resolveRoamReplyInThread", () => {
-  // Smart default: proactive bots (requireMention: false) need threading;
-  // mention-only bots reply at top level. Explicit settings always win.
+  // Default: thread every reply. Explicit per-group or wildcard settings win.
 
-  it("defaults to true when proactive (requireMention: false)", () => {
-    expect(resolveRoamReplyInThread({ groupConfig: { requireMention: false } })).toBe(
-      true,
-    );
+  it("defaults to true with no config", () => {
+    expect(resolveRoamReplyInThread({})).toBe(true);
   });
 
-  it("defaults to false when mention-only (no requireMention override = true)", () => {
-    expect(resolveRoamReplyInThread({})).toBe(false);
+  it("defaults to true regardless of requireMention", () => {
+    expect(
+      resolveRoamReplyInThread({ groupConfig: { requireMention: true } }),
+    ).toBe(true);
+    expect(
+      resolveRoamReplyInThread({ groupConfig: { requireMention: false } }),
+    ).toBe(true);
   });
 
-  it("explicit groupConfig.replyInThread overrides the smart default", () => {
+  it("explicit groupConfig.replyInThread: false opts out", () => {
+    expect(
+      resolveRoamReplyInThread({ groupConfig: { replyInThread: false } }),
+    ).toBe(false);
+  });
+
+  it("explicit wildcardConfig.replyInThread: false opts out", () => {
+    expect(
+      resolveRoamReplyInThread({ wildcardConfig: { replyInThread: false } }),
+    ).toBe(false);
+  });
+
+  it("groupConfig wins over wildcardConfig", () => {
     expect(
       resolveRoamReplyInThread({
-        groupConfig: { requireMention: false, replyInThread: false },
+        groupConfig: { replyInThread: false },
+        wildcardConfig: { replyInThread: true },
       }),
     ).toBe(false);
-    expect(
-      resolveRoamReplyInThread({
-        groupConfig: { requireMention: true, replyInThread: true },
-      }),
-    ).toBe(true);
-  });
-
-  it("inherits requireMention from wildcardConfig for the smart default", () => {
-    expect(
-      resolveRoamReplyInThread({ wildcardConfig: { requireMention: false } }),
-    ).toBe(true);
   });
 });

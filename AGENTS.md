@@ -204,6 +204,14 @@ Don't add Roam-internal-only behaviors to fixtures — those belong in
 - **`threadKey` is dead.** Earlier code used a string `threadKey`; the deployed
   API uses microsecond `threadTimestamp` and the two are mutually exclusive.
   Don't reintroduce `threadKey`.
+- **`dmPolicy: "open"` requires `["*"]` in `allowFrom` to actually pass the
+  SDK gate** (openclaw >=2026.5.x). The SDK's runtime DM gate treats open with
+  an empty allowFrom as block-all, not allow-all. The plugin auto-expands
+  empty `allowFrom`/`groupAllowFrom` to `["*"]` at the call site of
+  `resolveDmGroupAccessWithCommandGate` when the corresponding policy is
+  `"open"` — keep that synthesis around. Personal bots are owner-locked at
+  an earlier gate, so this only affects org bots, but the "open means open"
+  surface promise depends on it.
 - **Microseconds vs milliseconds.** Timestamps are identifiers and we treat
   them as immutable. `RoamInboundMessage` carries only `timestampMicros` (µs,
   the raw webhook value) and `threadTimestamp` (also µs). Both are passed

@@ -320,6 +320,20 @@ export async function handleRoamInbound(params: {
 
   const configAllowFrom = normalizeRoamAllowlist(account.config.allowFrom);
   const configGroupAllowFrom = normalizeRoamAllowlist(account.config.groupAllowFrom);
+  // The openclaw SDK's runtime DM gate (>= 2026.5.x) treats `dmPolicy: "open"`
+  // with an empty `allowFrom` as "block everyone" rather than "allow everyone"
+  // — `*` must be on the list (or the sender explicitly listed) for the gate
+  // to pass. Our v0.4.0 surface promise is the opposite: open is open by
+  // default. Reconcile by synthesizing `["*"]` here when the operator
+  // configured open without an allowlist. Personal bots are owner-locked
+  // upstream of this gate, so this only widens the org-bot case to what its
+  // policy already advertises.
+  const effectiveDmAllowFrom =
+    dmPolicy === "open" && configAllowFrom.length === 0 ? ["*"] : configAllowFrom;
+  const effectiveGroupAllowFromBase =
+    groupPolicy === "open" && configGroupAllowFrom.length === 0
+      ? ["*"]
+      : configGroupAllowFrom;
   const storeAllowFrom = await readStoreAllowFromForDmPolicy({
     provider: CHANNEL_ID,
     accountId: account.accountId,
@@ -383,8 +397,8 @@ export async function handleRoamInbound(params: {
     isGroup,
     dmPolicy,
     groupPolicy,
-    allowFrom: configAllowFrom,
-    groupAllowFrom: configGroupAllowFrom,
+    allowFrom: effectiveDmAllowFrom,
+    groupAllowFrom: effectiveGroupAllowFromBase,
     storeAllowFrom: storeAllowList,
     isSenderAllowed: (allowFrom) => resolveRoamAllowlistMatch({ allowFrom, senderId }).allowed,
     command: {
