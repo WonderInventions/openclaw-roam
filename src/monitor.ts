@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolveLoggerBackedRuntime } from "openclaw/plugin-sdk/extension-shared";
 import { fetchRoamApi } from "./http.js";
+import { ROAM_API_VERSION } from "./version.js";
 import {
   type RuntimeEnv,
   createWebhookInFlightLimiter,
@@ -360,7 +361,11 @@ async function subscribeRoamWebhooks(params: {
         Authorization: `Bearer ${params.apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ url: params.webhookUrl, event: WEBHOOK_EVENT }),
+      body: JSON.stringify({
+        url: params.webhookUrl,
+        event: WEBHOOK_EVENT,
+        version: ROAM_API_VERSION,
+      }),
     },
     auditContext: "roam-webhook-subscribe",
   });

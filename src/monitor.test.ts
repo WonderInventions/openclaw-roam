@@ -260,6 +260,7 @@ describe("monitorRoamProvider", () => {
     const body = JSON.parse(subscribeCall![1].body);
     expect(body.url).toBe("https://example.com/roam-webhook");
     expect(body.event).toBe("chat.message");
+    expect(body.version).toBe("2026-06-01");
   });
 
   it("skips subscription when webhookUrl is not configured", async () => {

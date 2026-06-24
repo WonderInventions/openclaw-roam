@@ -12,3 +12,12 @@ export const PLUGIN_VERSION: string = pkg.version;
  * unattributable — i.e. OpenClaw on a version older than this one.
  */
 export const ROAM_USER_AGENT = `openclaw-roam/${PLUGIN_VERSION}`;
+
+/**
+ * The Roam API version this plugin is built and tested against. Sent as the
+ * `Roam-Version` header on every request (and as `version` on webhook.subscribe)
+ * so the request/webhook contract is pinned to this plugin release rather than
+ * to whenever the API key happened to be created. Bump this deliberately — in
+ * lockstep with the parsing code — when adopting newer API shapes.
+ */
+export const ROAM_API_VERSION = "2026-06-01";
