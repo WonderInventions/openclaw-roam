@@ -1,5 +1,5 @@
 import { MAX_IMAGE_BYTES, fetchRemoteMedia } from "openclaw/plugin-sdk/media-runtime";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { fetchRoamApi } from "./http.js";
 import { resolveRoamAccount } from "./accounts.js";
 import { resolveApiBase } from "./api-base.js";
 import { stripRoamTargetPrefix } from "./normalize.js";
@@ -110,7 +110,7 @@ export async function sendMessageRoam(
     `[roam-send] chat.post req chat=${chatId} bytes=${Buffer.byteLength(message, "utf8")} thread=${opts.threadTimestamp ?? "no"}`,
   );
 
-  const { response, release } = await fetchWithSsrFGuard({
+  const { response, release } = await fetchRoamApi({
     url: `${apiBase}/chat.post`,
     init: {
       method: "POST",
@@ -227,7 +227,7 @@ export async function updateMessageRoam(
     `[roam-send] chat.update req chat=${chatId} ts=${timestamp} bytes=${Buffer.byteLength(message, "utf8")} thread=${opts.threadTimestamp ?? "no"}`,
   );
 
-  const { response, release } = await fetchWithSsrFGuard({
+  const { response, release } = await fetchRoamApi({
     url: `${apiBase}/chat.update`,
     init: {
       method: "POST",
@@ -363,7 +363,7 @@ export async function uploadItemRoam(
   logger.info(
     `[roam-send] item.upload req bytes=${fetched.buffer.length} mime=${contentType} filename=${filename}`,
   );
-  const { response, release } = await fetchWithSsrFGuard({
+  const { response, release } = await fetchRoamApi({
     url: `${apiBase}/item.upload`,
     init: {
       method: "POST",
@@ -418,7 +418,7 @@ export async function sendTypingRoam(
     body.threadTimestamp = opts.threadTimestamp;
   }
 
-  const { response, release } = await fetchWithSsrFGuard({
+  const { response, release } = await fetchRoamApi({
     url: `${apiBase}/chat.typing`,
     init: {
       method: "POST",

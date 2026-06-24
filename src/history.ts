@@ -1,4 +1,4 @@
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { fetchRoamApi } from "./http.js";
 import { resolveApiBase } from "./api-base.js";
 import { stripRoamTargetPrefix } from "./normalize.js";
 import { getRoamRuntime } from "./runtime.js";
@@ -53,7 +53,7 @@ export async function fetchRoamChatHistory(
   });
   const startedAt = Date.now();
 
-  const { response, release } = await fetchWithSsrFGuard({
+  const { response, release } = await fetchRoamApi({
     url: url.toString(),
     init: {
       method: "GET",
