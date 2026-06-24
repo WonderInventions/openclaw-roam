@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fetchRoamApi } from "./http.js";
-import { ROAM_USER_AGENT } from "./version.js";
+import { ROAM_API_VERSION, ROAM_USER_AGENT } from "./version.js";
 
 const mockFetchWithSsrFGuard = vi.fn(async (_args: unknown) => ({
   response: {},
@@ -36,6 +36,7 @@ describe("fetchRoamApi", () => {
     const opts = lastCall();
     const headers = opts.init?.headers as Record<string, string>;
     expect(headers["User-Agent"]).toBe(ROAM_USER_AGENT);
+    expect(headers["Roam-Version"]).toBe(ROAM_API_VERSION);
     expect(headers.Authorization).toBe("Bearer test-api-key");
     expect(headers["Content-Type"]).toBe("application/json");
     expect(opts.init?.method).toBe("POST");

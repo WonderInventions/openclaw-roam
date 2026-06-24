@@ -1,5 +1,5 @@
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
-import { ROAM_USER_AGENT } from "./version.js";
+import { ROAM_API_VERSION, ROAM_USER_AGENT } from "./version.js";
 
 type GuardedFetchArgs = Parameters<typeof fetchWithSsrFGuard>[0];
 
@@ -20,6 +20,7 @@ export function fetchRoamApi(
       ...args.init,
       headers: {
         "User-Agent": ROAM_USER_AGENT,
+        "Roam-Version": ROAM_API_VERSION,
         ...(args.init?.headers as Record<string, string> | undefined),
       },
     },
