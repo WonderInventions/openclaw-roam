@@ -65,7 +65,7 @@
     "@types/node": "^22.0.0",
     "openclaw": "2026.5.7",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.9"
   },
   "openclaw": {
     "extensions": [
