@@ -1,7 +1,8 @@
-// Plugin version and the User-Agent advertised on every outbound Roam API
-// request. Kept in sync with package.json by version.test.ts — bump both
-// together when releasing.
-export const PLUGIN_VERSION = "0.4.1";
+import pkg from "../package.json" with { type: "json" };
+
+// Plugin version, read straight from package.json so a release only bumps it in
+// one place.
+export const PLUGIN_VERSION: string = pkg.version;
 
 /**
  * Identifies this client to the Roam appserver by source and version, e.g.

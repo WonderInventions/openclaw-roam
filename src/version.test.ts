@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { PLUGIN_VERSION, ROAM_USER_AGENT } from "./version.js";
 
 describe("plugin version", () => {
-  it("stays in sync with package.json (bump both together)", () => {
+  it("is read from package.json at runtime", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const pkg = JSON.parse(
       readFileSync(resolve(here, "..", "package.json"), "utf8"),
