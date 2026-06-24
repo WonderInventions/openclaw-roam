@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolveLoggerBackedRuntime } from "openclaw/plugin-sdk/extension-shared";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { fetchRoamApi } from "./http.js";
 import {
   type RuntimeEnv,
   createWebhookInFlightLimiter,
@@ -352,7 +352,7 @@ async function subscribeRoamWebhooks(params: {
 }): Promise<void> {
   const apiBase = resolveApiBase(params.cfg, params.accountApiBaseUrl);
   const url = `${apiBase}/webhook.subscribe`;
-  const { response, release } = await fetchWithSsrFGuard({
+  const { response, release } = await fetchRoamApi({
     url,
     init: {
       method: "POST",
@@ -382,7 +382,7 @@ async function unsubscribeRoamWebhooks(params: {
   accountApiBaseUrl?: string;
 }): Promise<void> {
   const apiBase = resolveApiBase(params.cfg, params.accountApiBaseUrl);
-  await fetchWithSsrFGuard({
+  await fetchRoamApi({
     url: `${apiBase}/webhook.unsubscribe`,
     init: {
       method: "POST",
@@ -408,7 +408,7 @@ async function fetchRoamBotIdentity(
 ): Promise<RoamBotIdentity | null> {
   const apiBase = resolveApiBase(cfg, accountApiBaseUrl);
   try {
-    const { response, release } = await fetchWithSsrFGuard({
+    const { response, release } = await fetchRoamApi({
       url: `${apiBase}/token.info`,
       init: {
         method: "GET",

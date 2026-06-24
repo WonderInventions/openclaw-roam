@@ -14,7 +14,7 @@
  * directly observable end to end.
  */
 
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { fetchRoamApi } from "./http.js";
 import { resolveRoamAccount } from "./accounts.js";
 import { resolveApiBase } from "./api-base.js";
 import { stripRoamTargetPrefix } from "./normalize.js";
@@ -115,7 +115,7 @@ async function postStreamJson<T>(
   body: Record<string, unknown>,
   auditContext: string,
 ): Promise<T> {
-  const { response, release } = await fetchWithSsrFGuard({
+  const { response, release } = await fetchRoamApi({
     url,
     init: {
       method: "POST",
