@@ -379,30 +379,46 @@ async function subscribeRoamWebhooks(params: {
   }
 }
 
-/** Unsubscribe from Roam webhook events. */
+/** Unsubscribe from Roam webhook events. Returns void; errors are logged but
+ * never thrown — shutdown can't usefully recover from this. */
 async function unsubscribeRoamWebhooks(params: {
   apiKey: string;
   webhookUrl: string;
   cfg?: CoreConfig;
   accountApiBaseUrl?: string;
+  log?: { warn?: (msg: string) => void };
 }): Promise<void> {
   const apiBase = resolveApiBase(params.cfg, params.accountApiBaseUrl);
-  await fetchRoamApi({
-    url: `${apiBase}/webhook.unsubscribe`,
-    init: {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${params.apiKey}`,
-        "Content-Type": "application/json",
+  try {
+    const { response, release } = await fetchRoamApi({
+      url: `${apiBase}/webhook.unsubscribe`,
+      init: {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${params.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ url: params.webhookUrl, event: WEBHOOK_EVENT }),
       },
-      body: JSON.stringify({ url: params.webhookUrl, event: WEBHOOK_EVENT }),
-    },
-    auditContext: "roam-webhook-unsubscribe",
-  })
-    .then(({ release }) => release())
-    .catch(() => {
-      // Best-effort unsubscribe on shutdown
+      auditContext: "roam-webhook-unsubscribe",
     });
+    try {
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        // 4xx/5xx isn't fatal but is worth surfacing — an unsubscribe failure
+        // means Roam keeps the subscription pointing at our (now-stopped)
+        // webhook URL. If the operator restarts with a new URL the old route
+        // will get orphaned traffic until they manually clean it up.
+        params.log?.warn?.(
+          `Roam webhook.unsubscribe non-OK status=${response.status} body=${body.slice(0, 200)}`,
+        );
+      }
+    } finally {
+      await release();
+    }
+  } catch (err) {
+    params.log?.warn?.(`Roam webhook.unsubscribe failed: ${String(err)}`);
+  }
 }
 
 /** Fetch bot persona identity from token.info. Returns null on failure. */
@@ -594,11 +610,15 @@ export async function monitorRoamProvider(opts: RoamMonitorOptions): Promise<{ s
     }
     stopped = true;
     unregister();
-    // Best-effort unsubscribe on shutdown
+    // Best-effort unsubscribe on shutdown — never throws.
     if (webhookUrl) {
-      unsubscribeRoamWebhooks({ apiKey: account.apiKey, webhookUrl, cfg, accountApiBaseUrl }).catch(
-        () => {},
-      );
+      void unsubscribeRoamWebhooks({
+        apiKey: account.apiKey,
+        webhookUrl,
+        cfg,
+        accountApiBaseUrl,
+        log: { warn: (msg) => logger.warn(`[${account.accountId}] ${msg}`) },
+      });
     }
   };
 

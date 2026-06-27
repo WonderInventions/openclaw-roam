@@ -1,4 +1,5 @@
-import { MAX_IMAGE_BYTES, fetchRemoteMedia } from "openclaw/plugin-sdk/media-runtime";
+import { MAX_IMAGE_BYTES } from "openclaw/plugin-sdk/media-runtime";
+import { getDefaultLocalRoots, loadWebMedia } from "openclaw/plugin-sdk/web-media";
 import { fetchRoamApi } from "./http.js";
 import { resolveRoamAccount } from "./accounts.js";
 import { resolveApiBase } from "./api-base.js";
@@ -300,18 +301,22 @@ export async function updateMessageRoam(
 }
 
 /**
- * Derive a filename from a URL's path. Falls back to a generic name when the
- * URL has no useful tail segment. Roam requires `Content-Disposition` with a
- * filename on item.upload.
+ * Derive a filename from a URL or local-file path. Falls back to a generic
+ * name when there's no useful tail segment. Roam requires
+ * `Content-Disposition` with a filename on item.upload.
  */
-function filenameFromUrl(url: string, contentType: string): string {
+function filenameFromMediaRef(ref: string, contentType: string): string {
   try {
-    const path = new URL(url).pathname;
+    // Try URL parsing first — works for http(s)://, file://, etc.
+    const path = new URL(ref).pathname;
     const last = path.split("/").filter(Boolean).pop();
     if (last && last.includes(".")) return last;
     if (last) return contentTypeFilename(last, contentType);
   } catch {
-    // fall through to default
+    // Not a parseable URL — assume a filesystem path.
+    const last = ref.split("/").filter(Boolean).pop();
+    if (last && last.includes(".")) return last;
+    if (last) return contentTypeFilename(last, contentType);
   }
   return contentTypeFilename("attachment", contentType);
 }
@@ -327,24 +332,28 @@ function contentTypeFilename(base: string, contentType: string): string {
 }
 
 /**
- * Upload a remote URL's bytes to Roam's `/v1/item.upload` and return the
- * resulting itemId. Pass that itemId in `sendMessageRoam`'s `items` option to
- * attach the upload to a chat message.
+ * Upload the bytes referenced by `mediaRef` to Roam's `/v1/item.upload` and
+ * return the resulting itemId. Pass that itemId in `sendMessageRoam`'s
+ * `items` option to attach the upload to a chat message.
  *
- * - SSRF-bounded fetch via the SDK's `fetchRemoteMedia` (same path the inbound
- *   media-download pipeline uses).
- * - Content-Type comes from the fetched response; filename is derived from the
- *   URL path (or synthesized from the content-type as a fallback).
- * - Size cap: `MAX_IMAGE_BYTES` (matches the SDK default and Roam's 10MB cap).
+ * `mediaRef` may be either:
+ * - An HTTP(S) URL (SSRF-guarded fetch), OR
+ * - A local filesystem path under one of the OpenClaw media roots
+ *   (`~/.openclaw/media/outbound/...`, agent workspace, etc.). The host
+ *   runtime resolves outbound attachments to a local path before calling
+ *   `sendMedia`, so this is the common case.
+ *
+ * Local paths are checked against `getDefaultLocalRoots()` for safety — the
+ * SDK guards prevent reading arbitrary filesystem locations.
  *
  * Native streaming (`chat.startStream`) doesn't support attachments, so callers
  * that want to send media must use the chat.post path (which is what
  * `deliverRoamReply` always does for media payloads).
  */
 export async function uploadItemRoam(
-  mediaUrl: string,
+  mediaRef: string,
   opts: RoamSendOpts = {},
-): Promise<{ itemId: string; mimeType?: string }> {
+): Promise<{ itemId: string }> {
   const { cfg, account, apiKey } = resolveRoamSendContext(opts);
   const apiBase = resolveApiBase(cfg, account.config.apiBaseUrl);
   const logger = getRoamRuntime().logging.getChildLogger({
@@ -352,10 +361,25 @@ export async function uploadItemRoam(
     accountId: account.accountId,
   });
 
-  // 1. Fetch the source bytes via the SSRF-guarded media helper.
-  const fetched = await fetchRemoteMedia({ url: mediaUrl, maxBytes: MAX_IMAGE_BYTES });
+  // 1. Load the source bytes. `loadWebMedia` accepts both HTTPS URLs (with
+  //    SSRF guards) and local file paths (sandboxed to the OpenClaw media
+  //    roots). The host runtime saves outbound attachments to a local path
+  //    under `~/.openclaw/media/outbound/...` before calling `sendMedia`,
+  //    so the local-path branch is the common case in practice.
+  //
+  //    `optimizeImages: false` keeps the original bytes. The previous
+  //    `fetchRemoteMedia` path uploaded the source verbatim; `loadWebMedia`
+  //    defaults to re-encoding/resizing images to fit `maxBytes`, which would
+  //    silently alter what the user attached (and change the content-type).
+  //    Roam accepts up to its 10MB cap, so we enforce `maxBytes` strictly and
+  //    let an oversized upload surface as an error rather than mutating it.
+  const fetched = await loadWebMedia(mediaRef, {
+    maxBytes: MAX_IMAGE_BYTES,
+    optimizeImages: false,
+    localRoots: getDefaultLocalRoots(),
+  });
   const contentType = fetched.contentType ?? "application/octet-stream";
-  const filename = filenameFromUrl(mediaUrl, contentType);
+  const filename = fetched.fileName ?? filenameFromMediaRef(mediaRef, contentType);
 
   // 2. POST to /v1/item.upload with the bytes. Roam requires Content-Type +
   //    Content-Disposition: attachment; filename=...
@@ -393,7 +417,7 @@ export async function uploadItemRoam(
     logger.info(
       `[roam-send] item.upload OK  id=${data.id} mime=${data.mime ?? contentType} dt=${Date.now() - startedAt}ms`,
     );
-    return { itemId: data.id, mimeType: data.mime ?? contentType };
+    return { itemId: data.id };
   } finally {
     await release();
   }
