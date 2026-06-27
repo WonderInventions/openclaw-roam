@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sendMessageRoam, sendTypingRoam, uploadItemRoam } from "./send.js";
 
-const mockFetchRemoteMedia = vi.fn();
+const mockLoadWebMedia = vi.fn();
 vi.mock("openclaw/plugin-sdk/media-runtime", () => ({
   MAX_IMAGE_BYTES: 10_000_000,
-  fetchRemoteMedia: (...args: unknown[]) => mockFetchRemoteMedia(...args),
+}));
+vi.mock("openclaw/plugin-sdk/web-media", () => ({
+  loadWebMedia: (...args: unknown[]) => mockLoadWebMedia(...args),
+  getDefaultLocalRoots: () => ["/Users/test/.openclaw/media"],
 }));
 
 const { mockResolveRoamAccount } = vi.hoisted(() => ({
@@ -228,7 +231,7 @@ describe("uploadItemRoam", () => {
   });
 
   it("fetches the remote URL, POSTs to /v1/item.upload with Content-Disposition, returns the itemId", async () => {
-    mockFetchRemoteMedia.mockResolvedValueOnce({
+    mockLoadWebMedia.mockResolvedValueOnce({
       buffer: Buffer.from("imgbytes"),
       contentType: "image/png",
     });
@@ -239,10 +242,10 @@ describe("uploadItemRoam", () => {
 
     const result = await uploadItemRoam("https://cdn.example.com/path/to/cat.png");
 
-    expect(mockFetchRemoteMedia).toHaveBeenCalledWith({
-      url: "https://cdn.example.com/path/to/cat.png",
-      maxBytes: 10_000_000,
-    });
+    expect(mockLoadWebMedia).toHaveBeenCalledWith(
+      "https://cdn.example.com/path/to/cat.png",
+      expect.objectContaining({ maxBytes: 10_000_000 }),
+    );
     expect(mockFetchInner).toHaveBeenCalledOnce();
     const [url, opts] = mockFetchInner.mock.calls[0];
     expect(url).toBe("https://api.ro.am/v1/item.upload");
@@ -250,11 +253,44 @@ describe("uploadItemRoam", () => {
     expect(opts.headers.Authorization).toBe("Bearer test-api-key");
     expect(opts.headers["Content-Type"]).toBe("image/png");
     expect(opts.headers["Content-Disposition"]).toBe('attachment; filename="cat.png"');
-    expect(result).toEqual({ itemId: "item-abc", mimeType: "image/png" });
+    expect(result).toEqual({ itemId: "item-abc" });
+  });
+
+  it("accepts a local filesystem path (host runtime saves outbound media locally before sendMedia)", async () => {
+    // The host runtime resolves outbound attachments to a local path under
+    // `~/.openclaw/media/outbound/...` before calling `sendMedia`. The plugin
+    // delegates to `loadWebMedia`, which the SDK guards against arbitrary
+    // filesystem reads via `localRoots`.
+    mockLoadWebMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("imgbytes"),
+      contentType: "image/png",
+      fileName: "snapshot.png",
+    });
+    mockFetchInner.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: "item-local" }),
+    });
+
+    const result = await uploadItemRoam(
+      "/Users/test/.openclaw/media/outbound/abc---def.png",
+    );
+
+    expect(mockLoadWebMedia).toHaveBeenCalledWith(
+      "/Users/test/.openclaw/media/outbound/abc---def.png",
+      expect.objectContaining({
+        maxBytes: 10_000_000,
+        localRoots: ["/Users/test/.openclaw/media"],
+      }),
+    );
+    expect(result).toEqual({ itemId: "item-local" });
+    // Filename from loadWebMedia's metadata is preferred over the
+    // path-derived fallback.
+    const opts = mockFetchInner.mock.calls[0][1];
+    expect(opts.headers["Content-Disposition"]).toBe('attachment; filename="snapshot.png"');
   });
 
   it("derives a filename from the content-type when the URL has no extension", async () => {
-    mockFetchRemoteMedia.mockResolvedValueOnce({
+    mockLoadWebMedia.mockResolvedValueOnce({
       buffer: Buffer.from("imgbytes"),
       contentType: "image/jpeg",
     });
@@ -270,7 +306,7 @@ describe("uploadItemRoam", () => {
   });
 
   it("rejects when item.upload returns no id", async () => {
-    mockFetchRemoteMedia.mockResolvedValueOnce({
+    mockLoadWebMedia.mockResolvedValueOnce({
       buffer: Buffer.from("x"),
       contentType: "image/png",
     });
@@ -282,7 +318,7 @@ describe("uploadItemRoam", () => {
   });
 
   it("rejects on HTTP error status", async () => {
-    mockFetchRemoteMedia.mockResolvedValueOnce({
+    mockLoadWebMedia.mockResolvedValueOnce({
       buffer: Buffer.from("x"),
       contentType: "image/png",
     });

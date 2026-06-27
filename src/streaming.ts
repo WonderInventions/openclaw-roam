@@ -127,6 +127,17 @@ export function createRoamLiveMessageTrack(
   let failed = false;
   let throttleTimer: ReturnType<typeof setTimeout> | null = null;
   let inFlight: Promise<void> | null = null;
+
+  // Mark the track failed and release the throttle timer reference. The track
+  // is single-use after this — all further `pushAccumulated` calls are no-ops
+  // (and `finalize` short-circuits).
+  const markFailed = (): void => {
+    failed = true;
+    if (throttleTimer) {
+      clearTimeout(throttleTimer);
+      throttleTimer = null;
+    }
+  };
   let lastSendAt = 0;
 
   const flush = async (): Promise<void> => {
@@ -152,7 +163,7 @@ export function createRoamLiveMessageTrack(
           lastSendAt = Date.now();
           params.onActivity?.();
         } catch (err) {
-          failed = true;
+          markFailed();
           // Advance committedPrefixLength past the text Roam already accepted
           // so the deliver fallback chat.posts only the unsent suffix instead
           // of duplicating what the user already sees.
@@ -169,7 +180,7 @@ export function createRoamLiveMessageTrack(
 
       const headChars = sliceByByteBudget(target, budget);
       if (headChars === 0) {
-        failed = true;
+        markFailed();
         logEvent(
           `cap-split stuck chars=${target.length} budget=${budget} committed=${committedPrefixLength}`,
         );
@@ -192,7 +203,7 @@ export function createRoamLiveMessageTrack(
         }
         params.onActivity?.();
       } catch (err) {
-        failed = true;
+        markFailed();
         if (lastSentText.length > 0) {
           committedPrefixLength += lastSentText.length;
         }

@@ -39,13 +39,54 @@ import { roamSetupAdapter } from "./setup-core.js";
 import { roamSetupWizard } from "./setup-surface.js";
 import type { CoreConfig } from "./types.js";
 
-function coerceThreadTimestamp(threadId: string | number | null | undefined): number | undefined {
+/**
+ * Coerce the host runtime's loose `threadId` (string | number | nullish) into
+ * the strict µs-since-epoch number Roam expects for `threadTimestamp`. Roam
+ * indexes messages by exact µs, so anything that isn't a positive finite
+ * number must round-trip to undefined — otherwise we'd send `threadTimestamp: 0`
+ * (from `Number("")`) or `NaN` and get a 400.
+ *
+ * Exported for test access; not part of the channel plugin's public surface.
+ */
+export function coerceThreadTimestamp(
+  threadId: string | number | null | undefined,
+): number | undefined {
   if (threadId === null || threadId === undefined) return undefined;
   const n = typeof threadId === "number" ? threadId : Number(threadId);
-  // Roam expects µs since epoch; only positive finite numbers are valid.
-  // `Number("")` is 0, `Number("abc")` is NaN — both must round-trip to
-  // undefined so we don't send `threadTimestamp: 0` and trigger a 400.
   return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * The `sendMedia` outbound flow: upload the URL's bytes via /v1/item.upload,
+ * then post the chat message with the returned itemId attached. Extracted
+ * out of the channel-plugin literal so it's directly unit-testable.
+ *
+ * If no `mediaUrl` is provided, falls back to a plain text post — keeps the
+ * adapter's contract intact for callers that pass `mediaUrl: undefined`.
+ */
+export async function sendMediaViaUpload(params: {
+  cfg: CoreConfig;
+  to: string;
+  text: string;
+  mediaUrl: string | null | undefined;
+  accountId: string | null | undefined;
+  threadId: string | number | null | undefined;
+}): Promise<{ messageId: string }> {
+  const sendOpts = {
+    accountId: params.accountId ?? undefined,
+    cfg: params.cfg,
+    threadTimestamp: coerceThreadTimestamp(params.threadId),
+  };
+  if (params.mediaUrl) {
+    const { itemId } = await uploadItemRoam(params.mediaUrl, sendOpts);
+    const result = await sendMessageRoam(params.to, params.text, {
+      ...sendOpts,
+      items: [itemId],
+    });
+    return { messageId: result.chatId };
+  }
+  const result = await sendMessageRoam(params.to, params.text, sendOpts);
+  return { messageId: result.chatId };
 }
 
 const meta = {
@@ -125,7 +166,9 @@ export const roamPlugin: ChannelPlugin<ResolvedRoamAccount> = {
     chatTypes: ["direct", "group"],
     reactions: false,
     threads: true,
-    media: false,
+    // Outbound media: the `sendMedia` adapter uploads via `/v1/item.upload`
+    // and attaches the returned itemId to the chat.post body.
+    media: true,
     nativeCommands: false,
     blockStreaming: true,
   },
@@ -192,29 +235,13 @@ export const roamPlugin: ChannelPlugin<ResolvedRoamAccount> = {
         });
         return { messageId: result.chatId };
       },
-      sendMedia: async ({ cfg, to, text, mediaUrl, accountId, threadId }) => {
-        // Upload the media via /v1/item.upload first so the user sees a real
-        // attachment (image preview, downloadable file) instead of a raw URL
-        // in the message body. The previous behavior — inlining `mediaUrl` as
-        // text — looked like the agent had attached something but the user
-        // got a paste-able link.
-        //
-        // Roam's chat.startStream endpoint doesn't support attachments, so
-        // media payloads ALWAYS take the chat.post path (handled upstream
-        // in `deliverRoamReply`).
-        const sendOpts = {
-          accountId: accountId ?? undefined,
-          cfg: cfg as CoreConfig,
-          threadTimestamp: coerceThreadTimestamp(threadId),
-        };
-        if (mediaUrl) {
-          const { itemId } = await uploadItemRoam(mediaUrl, sendOpts);
-          const result = await sendMessageRoam(to, text, { ...sendOpts, items: [itemId] });
-          return { messageId: result.chatId };
-        }
-        const result = await sendMessageRoam(to, text, sendOpts);
-        return { messageId: result.chatId };
-      },
+      // Upload-then-post: user sees a real attachment (image preview,
+      // downloadable file) rather than a pasted URL. Native streaming
+      // (chat.startStream) doesn't accept `items`, so media payloads
+      // always take the chat.post path — `deliverRoamReply` routes them
+      // there upstream.
+      sendMedia: async ({ cfg, to, text, mediaUrl, accountId, threadId }) =>
+        sendMediaViaUpload({ cfg: cfg as CoreConfig, to, text, mediaUrl, accountId, threadId }),
     }),
   },
   status: {
