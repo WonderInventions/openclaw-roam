@@ -1,6 +1,6 @@
 {
   "name": "@roamhq/openclaw-roam",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "OpenClaw Roam HQ channel plugin",
   "type": "module",
   "license": "MIT",
