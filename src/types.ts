@@ -131,7 +131,17 @@ export type RoamBotIdentity = {
 export type RoamWebhookEvent = {
   /** Always "message" for chat.message events. */
   type: string;
-  /** Content type (e.g. "text"). */
+  /**
+   * Message revision count on v1 chat.message webhooks.
+   * `1` (or omitted on older payloads) = create; `>1` = edit; delete also
+   * bumps version and sets `contentType: "deleted"`. This plugin only
+   * dispatches creates to the agent — see `shouldDispatchChatMessage`.
+   */
+  version?: number;
+  /**
+   * Content type (e.g. `"text"`). Tombstone deletes arrive as
+   * `contentType: "deleted"` (identity-only payload, no body).
+   */
   contentType?: string;
   /** Sender user UUID. */
   userId: string;
@@ -153,7 +163,13 @@ export type RoamWebhookEvent = {
   chatType: "dm" | "channel" | "group";
 };
 
-/** An item attached to a Roam webhook event (image, file, etc.). */
+/**
+ * An item attached to a Roam webhook event (image, file, etc.).
+ *
+ * `url` may be present even while the asset is still finishing CDN
+ * ingestion (appserver fills progressive URLs before delivery when it
+ * can). Prefer `url` when set; omit / skip items that still lack one.
+ */
 export type RoamWebhookItem = {
   id: string;
   type: string;
@@ -164,6 +180,8 @@ export type RoamWebhookItem = {
   width?: number;
   height?: number;
   size?: number;
+  /** Asset id when the attachment is asset-backed (may appear without url). */
+  assetId?: string;
 };
 
 /** Parsed incoming message context. */

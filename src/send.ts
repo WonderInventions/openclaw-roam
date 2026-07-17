@@ -1,6 +1,6 @@
 import { MAX_IMAGE_BYTES } from "openclaw/plugin-sdk/media-runtime";
 import { getDefaultLocalRoots, loadWebMedia } from "openclaw/plugin-sdk/web-media";
-import { fetchRoamApi } from "./http.js";
+import { fetchRoamApi, roamApiErrorFromResponse } from "./http.js";
 import { resolveRoamAccount } from "./accounts.js";
 import { resolveApiBase } from "./api-base.js";
 import { stripRoamTargetPrefix } from "./normalize.js";
@@ -130,26 +130,22 @@ export async function sendMessageRoam(
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
       const status = response.status;
-      let errorMsg = `Roam send failed (${status})`;
-
-      if (status === 400) {
-        errorMsg = `Roam: bad request - ${errorBody || "invalid message format"}`;
-      } else if (status === 401) {
-        errorMsg = "Roam: authentication failed - check API key";
-      } else if (status === 403) {
-        errorMsg = "Roam: forbidden - bot may not have access to this chat";
-      } else if (status === 404) {
-        errorMsg = `Roam: chat not found (id=${chatId})`;
-      } else if (status === 413) {
-        errorMsg = "Roam: message too large (8000 byte limit for blocks)";
-      } else if (errorBody) {
-        errorMsg = `Roam send failed: ${errorBody}`;
+      const apiErr = roamApiErrorFromResponse({
+        status,
+        body: errorBody,
+        action: "send",
+      });
+      // Preserve the more specific chat-not-found wording for bare 404s.
+      if (status === 404 && !apiErr.code) {
+        apiErr.message = `Roam: chat not found (id=${chatId})`;
+      } else if (status === 400 && !errorBody.trim()) {
+        apiErr.message = "Roam: bad request - invalid message format";
       }
 
       logger.warn(
-        `[roam-send] chat.post FAIL chat=${chatId} status=${status} dt=${Date.now() - startedAt}ms reqBytes=${Buffer.byteLength(message, "utf8")}${responseTraceTail(response)} body=${errorBody.slice(0, 200)}`,
+        `[roam-send] chat.post FAIL chat=${chatId} status=${status}${apiErr.code ? ` code=${apiErr.code}` : ""} dt=${Date.now() - startedAt}ms reqBytes=${Buffer.byteLength(message, "utf8")}${responseTraceTail(response)} body=${errorBody.slice(0, 200)}`,
       );
-      throw new Error(errorMsg);
+      throw apiErr;
     }
 
     try {
@@ -247,26 +243,21 @@ export async function updateMessageRoam(
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
       const status = response.status;
-      let errorMsg = `Roam update failed (${status})`;
-
-      if (status === 400) {
-        errorMsg = `Roam: bad request - ${errorBody || "invalid update"}`;
-      } else if (status === 401) {
-        errorMsg = "Roam: authentication failed - check API key";
-      } else if (status === 403) {
-        errorMsg = "Roam: forbidden - bot may not have access to this chat";
-      } else if (status === 404) {
-        errorMsg = `Roam: message not found (chat=${chatId} timestamp=${timestamp})`;
-      } else if (status === 413) {
-        errorMsg = "Roam: message too large (8000 byte limit for blocks)";
-      } else if (errorBody) {
-        errorMsg = `Roam update failed: ${errorBody}`;
+      const apiErr = roamApiErrorFromResponse({
+        status,
+        body: errorBody,
+        action: "update",
+      });
+      if (status === 404 && !apiErr.code) {
+        apiErr.message = `Roam: message not found (chat=${chatId} timestamp=${timestamp})`;
+      } else if (status === 400 && !errorBody.trim()) {
+        apiErr.message = "Roam: bad request - invalid update";
       }
 
       logger.warn(
-        `[roam-send] chat.update FAIL chat=${chatId} ts=${timestamp} status=${status} dt=${Date.now() - startedAt}ms reqBytes=${Buffer.byteLength(message, "utf8")}${responseTraceTail(response)} body=${errorBody.slice(0, 200)}`,
+        `[roam-send] chat.update FAIL chat=${chatId} ts=${timestamp} status=${status}${apiErr.code ? ` code=${apiErr.code}` : ""} dt=${Date.now() - startedAt}ms reqBytes=${Buffer.byteLength(message, "utf8")}${responseTraceTail(response)} body=${errorBody.slice(0, 200)}`,
       );
-      throw new Error(errorMsg);
+      throw apiErr;
     }
 
     try {
@@ -405,10 +396,15 @@ export async function uploadItemRoam(
   try {
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
+      const apiErr = roamApiErrorFromResponse({
+        status: response.status,
+        body: errorBody,
+        action: "item.upload",
+      });
       logger.warn(
-        `[roam-send] item.upload FAIL status=${response.status} dt=${Date.now() - startedAt}ms${responseTraceTail(response)} body=${errorBody.slice(0, 200)}`,
+        `[roam-send] item.upload FAIL status=${response.status}${apiErr.code ? ` code=${apiErr.code}` : ""} dt=${Date.now() - startedAt}ms${responseTraceTail(response)} body=${errorBody.slice(0, 200)}`,
       );
-      throw new Error(`Roam item.upload failed (${response.status}): ${errorBody.slice(0, 200)}`);
+      throw apiErr;
     }
     const data = (await response.json()) as { id?: string; mime?: string };
     if (!data.id) {

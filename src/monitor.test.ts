@@ -2,10 +2,13 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   monitorRoamProvider,
+  parseRoamWebhookEvent,
+  shouldDispatchChatMessage,
+  unwrapRoamWebhookEnvelope,
   verifyStandardWebhookSignature,
   webhookEventToInbound,
 } from "./monitor.js";
-import type { CoreConfig } from "./types.js";
+import type { CoreConfig, RoamWebhookEvent } from "./types.js";
 
 const { mockResolveRoamAccount, mockResolveLoggerBackedRuntime } = vi.hoisted(() => ({
   mockResolveRoamAccount: vi.fn(),
@@ -195,7 +198,7 @@ describe("monitorRoamProvider", () => {
   });
 
   it("continues without botId when token.info returns HTTP error", async () => {
-    mockFetchInner.mockResolvedValue({ ok: false, status: 401 });
+    mockFetchInner.mockResolvedValue({ ok: false, status: 401, text: async () => "" });
 
     const { stop } = await monitorRoamProvider({});
     stop();
@@ -205,11 +208,47 @@ describe("monitorRoamProvider", () => {
     );
   });
 
+  it("refuses to start when token.info returns token_revoked (no retry)", async () => {
+    mockResolveRoamAccount.mockReturnValue(defaultAccount({ apiKey: "rmk-orgkey" }));
+    mockFetchInner.mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => '{"ok":false,"error":"token_revoked"}',
+    });
+
+    await expect(monitorRoamProvider({})).rejects.toThrow(/token_revoked/);
+
+    const tokenInfoCalls = mockFetchInner.mock.calls.filter(([url]: string[]) =>
+      url.includes("token.info"),
+    );
+    // Permanent auth failure must not retry.
+    expect(tokenInfoCalls).toHaveLength(1);
+  });
+
+  it("refuses to start when token.info returns invalid_token (no retry)", async () => {
+    mockResolveRoamAccount.mockReturnValue(defaultAccount({ apiKey: "rmp-abc123" }));
+    mockFetchInner.mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => '{"ok":false,"error":"invalid_token"}',
+    });
+
+    await expect(monitorRoamProvider({})).rejects.toThrow(/invalid_token/);
+    const tokenInfoCalls = mockFetchInner.mock.calls.filter(([url]: string[]) =>
+      url.includes("token.info"),
+    );
+    expect(tokenInfoCalls).toHaveLength(1);
+  });
+
   it("refuses to start a PAT bot (rmp- prefix) when token.info keeps failing", async () => {
     // PATs depend on the owner-only filter for security; without an ownerId
     // the bot would respond to anyone. Fail-closed is safer than degrading.
     mockResolveRoamAccount.mockReturnValue(defaultAccount({ apiKey: "rmp-abc123" }));
-    mockFetchInner.mockResolvedValue({ ok: false, status: 500 });
+    mockFetchInner.mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => "",
+    });
 
     await expect(monitorRoamProvider({})).rejects.toThrow(
       /Personal Access Token but token.info failed/,
@@ -220,8 +259,8 @@ describe("monitorRoamProvider", () => {
     // First two attempts fail, third succeeds — the warning-then-recover path.
     mockResolveRoamAccount.mockReturnValue(defaultAccount({ apiKey: "rmk-orgkey" }));
     mockFetchInner
-      .mockResolvedValueOnce({ ok: false, status: 503 })
-      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "" })
+      .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "" })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ user: { id: "u", name: "n" } }),
@@ -260,7 +299,7 @@ describe("monitorRoamProvider", () => {
     const body = JSON.parse(subscribeCall![1].body);
     expect(body.url).toBe("https://example.com/roam-webhook");
     expect(body.event).toBe("chat.message");
-    expect(body.version).toBe("2026-06-01");
+    expect(body.version).toBe("2026-07-07");
   });
 
   it("skips subscription when webhookUrl is not configured", async () => {
@@ -443,6 +482,116 @@ describe("monitorRoamProvider", () => {
   });
 });
 
+describe("unwrapRoamWebhookEnvelope / parseRoamWebhookEvent", () => {
+  const bareMessage = {
+    type: "message",
+    contentType: "text",
+    userId: "user-1",
+    chatId: "chat-1",
+    text: "hello",
+    timestamp: 1718900000000000,
+    chatType: "dm" as const,
+    version: 1,
+  };
+
+  it("passes bare baseline payloads through unchanged", () => {
+    expect(unwrapRoamWebhookEnvelope(bareMessage)).toEqual(bareMessage);
+    expect(parseRoamWebhookEvent(bareMessage)?.chatId).toBe("chat-1");
+  });
+
+  it("unwraps 2026-07-07 envelope via apiVersion + data", () => {
+    const enveloped = {
+      type: "chat.message",
+      eventId: "0197f9a1-7d2e-7cc3-9f6a-8b1c2d3e4f5a",
+      timestamp: "2026-07-07T18:23:45.123456Z",
+      apiVersion: "2026-07-07",
+      data: {
+        // envelope omits inner type: "message"
+        contentType: "text",
+        userId: "user-1",
+        chatId: "chat-env",
+        text: "from envelope",
+        timestamp: 1718900000000000,
+        chatType: "dm",
+        version: 1,
+      },
+    };
+    const unwrapped = unwrapRoamWebhookEnvelope(enveloped) as Record<string, unknown>;
+    expect(unwrapped.type).toBe("message");
+    expect(unwrapped.chatId).toBe("chat-env");
+    expect(unwrapped.text).toBe("from envelope");
+
+    const parsed = parseRoamWebhookEvent(enveloped);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.chatId).toBe("chat-env");
+    expect(parsed!.text).toBe("from envelope");
+    expect(shouldDispatchChatMessage(parsed!)).toBe(true);
+  });
+
+  it("does not treat random objects with apiVersion but no data as envelopes", () => {
+    const notEnvelope = { ...bareMessage, apiVersion: "2026-07-07" };
+    expect(unwrapRoamWebhookEnvelope(notEnvelope)).toEqual(notEnvelope);
+  });
+
+  it("still drops enveloped edits/deletes after unwrap", () => {
+    const edit = {
+      type: "chat.message",
+      eventId: "e1",
+      timestamp: "2026-07-07T18:23:45Z",
+      apiVersion: "2026-07-07",
+      data: { ...bareMessage, version: 2, text: "edited" },
+    };
+    const parsed = parseRoamWebhookEvent(edit);
+    expect(parsed).not.toBeNull();
+    expect(shouldDispatchChatMessage(parsed!)).toBe(false);
+  });
+});
+
+describe("shouldDispatchChatMessage", () => {
+  // v1 chat.message fires for create/edit/delete. The agent must only see
+  // creates — otherwise every edit re-drives a full agent turn.
+  const base: RoamWebhookEvent = {
+    type: "message",
+    contentType: "text",
+    userId: "user-1",
+    chatId: "chat-1",
+    text: "hello",
+    timestamp: 1718900000000000,
+    chatType: "group",
+  };
+
+  it("dispatches creates (version missing or 1)", () => {
+    expect(shouldDispatchChatMessage(base)).toBe(true);
+    expect(shouldDispatchChatMessage({ ...base, version: 1 })).toBe(true);
+  });
+
+  it("drops edits (version > 1)", () => {
+    expect(shouldDispatchChatMessage({ ...base, version: 2, text: "edited" })).toBe(
+      false,
+    );
+    expect(shouldDispatchChatMessage({ ...base, version: 5 })).toBe(false);
+  });
+
+  it("drops delete tombstones (contentType deleted)", () => {
+    expect(
+      shouldDispatchChatMessage({
+        ...base,
+        version: 3,
+        contentType: "deleted",
+        text: "",
+      }),
+    ).toBe(false);
+    // Even without version, deleted content must never reach the agent.
+    expect(
+      shouldDispatchChatMessage({
+        ...base,
+        contentType: "deleted",
+        text: "",
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("webhookEventToInbound", () => {
   // Roam timestamps are microsecond-precision and Roam indexes messages by
   // the exact µs value. The plugin must carry the raw µs through unchanged
@@ -467,6 +616,42 @@ describe("webhookEventToInbound", () => {
     expect(Math.floor(inbound.timestampMicros / 1000) * 1000).not.toBe(
       inbound.timestampMicros,
     );
+  });
+
+  it("uses progressive attachment URLs when present (even with assetId)", () => {
+    // wonder#45443: webhook items may include a usable `url` while the asset
+    // is still finishing ingestion. Prefer the url; never require url to be
+    // absent just because assetId is set.
+    const inbound = webhookEventToInbound({
+      type: "message",
+      contentType: "text",
+      userId: "user-1",
+      chatId: "chat-1",
+      text: "see this",
+      timestamp: 1718900000000000,
+      chatType: "group",
+      items: [
+        {
+          id: "item-1",
+          type: "photo",
+          mime: "image/png",
+          name: "shot.png",
+          assetId: "asset-still-ingesting",
+          url: "https://assets-cdn.ro.am/content/progressive?sig=1",
+        },
+        {
+          // Metadata-only item without url — skipped, does not block others.
+          id: "item-2",
+          type: "file",
+          mime: "application/pdf",
+          assetId: "asset-no-url-yet",
+        },
+      ],
+    });
+    expect(inbound.mediaUrls).toEqual([
+      "https://assets-cdn.ro.am/content/progressive?sig=1",
+    ]);
+    expect(inbound.mediaTypes).toEqual(["image/png"]);
   });
 });
 
