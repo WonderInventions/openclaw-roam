@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchRoamApi } from "./http.js";
+import {
+  fetchRoamApi,
+  isPermanentRoamAuthErrorCode,
+  parseRoamApiErrorBody,
+  roamApiErrorFromResponse,
+  ROAM_ERROR_INVALID_TOKEN,
+  ROAM_ERROR_TOKEN_REVOKED,
+} from "./http.js";
 import { ROAM_API_VERSION, ROAM_USER_AGENT } from "./version.js";
 
 const mockFetchWithSsrFGuard = vi.fn(async (_args: unknown) => ({
@@ -62,5 +69,63 @@ describe("fetchRoamApi", () => {
 
     const headers = lastCall().init?.headers as Record<string, string>;
     expect(headers["User-Agent"]).toBe("custom/9.9.9");
+  });
+});
+
+describe("parseRoamApiErrorBody", () => {
+  it("reads v1 machine-readable codes from {ok:false,error:<code>}", () => {
+    expect(parseRoamApiErrorBody('{"ok":false,"error":"token_revoked"}')).toEqual({
+      code: ROAM_ERROR_TOKEN_REVOKED,
+    });
+    expect(parseRoamApiErrorBody('{"ok":false,"error":"invalid_token"}')).toEqual({
+      code: ROAM_ERROR_INVALID_TOKEN,
+    });
+  });
+
+  it("reads legacy dual-form {error:sentence,code:<code>}", () => {
+    expect(
+      parseRoamApiErrorBody('{"error":"Token revoked","code":"token_revoked"}'),
+    ).toEqual({
+      code: ROAM_ERROR_TOKEN_REVOKED,
+      message: "Token revoked",
+    });
+  });
+
+  it("returns empty for non-JSON or empty bodies", () => {
+    expect(parseRoamApiErrorBody("")).toEqual({});
+    expect(parseRoamApiErrorBody("not json")).toEqual({});
+  });
+});
+
+describe("roamApiErrorFromResponse", () => {
+  it("marks token_revoked and invalid_token as permanent auth failures", () => {
+    const revoked = roamApiErrorFromResponse({
+      status: 401,
+      body: '{"ok":false,"error":"token_revoked"}',
+    });
+    expect(revoked.code).toBe(ROAM_ERROR_TOKEN_REVOKED);
+    expect(revoked.isPermanentAuthFailure).toBe(true);
+    expect(revoked.message).toMatch(/token revoked/i);
+
+    const invalid = roamApiErrorFromResponse({
+      status: 401,
+      body: '{"ok":false,"error":"invalid_token"}',
+    });
+    expect(invalid.code).toBe(ROAM_ERROR_INVALID_TOKEN);
+    expect(invalid.isPermanentAuthFailure).toBe(true);
+    expect(invalid.message).toMatch(/invalid API token/i);
+  });
+
+  it("does not treat generic 401 as permanent auth failure", () => {
+    const err = roamApiErrorFromResponse({ status: 401, body: "" });
+    expect(err.isPermanentAuthFailure).toBe(false);
+    expect(err.message).toMatch(/authentication failed/i);
+  });
+
+  it("isPermanentRoamAuthErrorCode only matches known permanent codes", () => {
+    expect(isPermanentRoamAuthErrorCode(ROAM_ERROR_TOKEN_REVOKED)).toBe(true);
+    expect(isPermanentRoamAuthErrorCode(ROAM_ERROR_INVALID_TOKEN)).toBe(true);
+    expect(isPermanentRoamAuthErrorCode("not_authed")).toBe(false);
+    expect(isPermanentRoamAuthErrorCode(undefined)).toBe(false);
   });
 });

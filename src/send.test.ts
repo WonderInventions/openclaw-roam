@@ -128,6 +128,33 @@ describe("sendMessageRoam", () => {
     await expect(sendMessageRoam("chat-1", "hello")).rejects.toThrow("authentication failed");
   });
 
+  it("maps token_revoked to a permanent auth error", async () => {
+    mockFetchInner.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: async () => '{"ok":false,"error":"token_revoked"}',
+    });
+    await expect(sendMessageRoam("chat-1", "hello")).rejects.toMatchObject({
+      name: "RoamApiError",
+      code: "token_revoked",
+      isPermanentAuthFailure: true,
+    });
+  });
+
+  it("maps invalid_token distinctly from token_revoked", async () => {
+    mockFetchInner.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: async () => '{"ok":false,"error":"invalid_token"}',
+    });
+    const err = await sendMessageRoam("chat-1", "hello").then(
+      () => null,
+      (e: unknown) => e as { code?: string; message?: string },
+    );
+    expect(err).toMatchObject({ code: "invalid_token" });
+    expect(String(err?.message)).toMatch(/invalid API token/i);
+  });
+
   it("maps HTTP 403 to forbidden error", async () => {
     mockFetchInner.mockResolvedValueOnce({ ok: false, status: 403, text: async () => "" });
     await expect(sendMessageRoam("chat-1", "hello")).rejects.toThrow("forbidden");

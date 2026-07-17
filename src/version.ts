@@ -19,5 +19,10 @@ export const ROAM_USER_AGENT = `openclaw-roam/${PLUGIN_VERSION}`;
  * so the request/webhook contract is pinned to this plugin release rather than
  * to whenever the API key happened to be created. Bump this deliberately — in
  * lockstep with the parsing code — when adopting newer API shapes.
+ *
+ * `2026-07-07` is the common event envelope for v1 webhooks
+ * (`{ type, eventId, timestamp, apiVersion, data }`). Parser also accepts bare
+ * baseline payloads (`unwrapRoamWebhookEnvelope` in monitor.ts) for any
+ * residual unpinned/static deliveries still on older shapes.
  */
-export const ROAM_API_VERSION = "2026-06-01";
+export const ROAM_API_VERSION = "2026-07-07";

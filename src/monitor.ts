@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolveLoggerBackedRuntime } from "openclaw/plugin-sdk/extension-shared";
-import { fetchRoamApi } from "./http.js";
+import { fetchRoamApi, roamApiErrorFromResponse, RoamApiError } from "./http.js";
 import { ROAM_API_VERSION } from "./version.js";
 import {
   type RuntimeEnv,
@@ -138,11 +138,46 @@ function isDuplicateRoamMessage(accountId: string, messageId: string): boolean {
   return false;
 }
 
-function parseRoamWebhookEvent(raw: unknown): RoamWebhookEvent | null {
+/**
+ * First API version that wraps every v1 webhook body in the common envelope
+ * `{ type, eventId, timestamp, apiVersion, data }`. Detect via `apiVersion`
+ * (and a present object `data`) so bare baseline payloads and enveloped
+ * deliveries share one code path.
+ */
+export const ROAM_WEBHOOK_ENVELOPE_VERSION = "2026-07-07";
+
+/**
+ * If `raw` is a 2026-07-07+ common event envelope, return the inner `data`
+ * payload. For `chat.message`, restore the legacy `type: "message"`
+ * discriminator when the envelope carries `type: "chat.message"` and `data`
+ * omits it. Bare (baseline `2026-06-01`) payloads pass through unchanged.
+ */
+export function unwrapRoamWebhookEnvelope(raw: unknown): unknown {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return raw;
+  }
+  const env = raw as Record<string, unknown>;
+  // Detect by apiVersion + data object (not only equality to 2026-07-07) so
+  // future envelope versions keep unwrapping without a pin bump.
+  if (typeof env.apiVersion !== "string" || env.apiVersion.length === 0) {
+    return raw;
+  }
+  if (!env.data || typeof env.data !== "object" || Array.isArray(env.data)) {
+    return raw;
+  }
+  const data = { ...(env.data as Record<string, unknown>) };
+  if (env.type === "chat.message" && data.type === undefined) {
+    data.type = "message";
+  }
+  return data;
+}
+
+export function parseRoamWebhookEvent(raw: unknown): RoamWebhookEvent | null {
+  const unwrapped = unwrapRoamWebhookEnvelope(raw);
+  if (!unwrapped || typeof unwrapped !== "object" || Array.isArray(unwrapped)) {
     return null;
   }
-  const obj = raw as Record<string, unknown>;
+  const obj = unwrapped as Record<string, unknown>;
   if (obj.type !== "message") {
     return null;
   }
@@ -163,7 +198,29 @@ function parseRoamWebhookEvent(raw: unknown): RoamWebhookEvent | null {
   if (obj.chatType !== "dm" && obj.chatType !== "channel" && obj.chatType !== "group") {
     return null;
   }
+  // Optional edit revision (1 = create, >1 = edit). Accept number only.
+  if (obj.version !== undefined && (typeof obj.version !== "number" || !Number.isFinite(obj.version))) {
+    return null;
+  }
   return obj as unknown as RoamWebhookEvent;
+}
+
+/**
+ * Whether a parsed `chat.message` webhook should be dispatched to the agent.
+ *
+ * v1 delivers create, edit, and delete on the same event. Treating every
+ * delivery as a new user message re-drives the agent on edits/deletes.
+ * Only **new** messages are agent-worthy: `version` missing or `=== 1`, and
+ * not a delete tombstone (`contentType === "deleted"`).
+ */
+export function shouldDispatchChatMessage(event: RoamWebhookEvent): boolean {
+  if (event.contentType === "deleted") {
+    return false;
+  }
+  if (event.version !== undefined && event.version !== 1) {
+    return false;
+  }
+  return true;
 }
 
 export function webhookEventToInbound(event: RoamWebhookEvent): RoamInboundMessage {
@@ -186,7 +243,11 @@ export function webhookEventToInbound(event: RoamWebhookEvent): RoamInboundMessa
     threadTimestamp: event.threadTimestamp ?? undefined,
   };
 
-  // Extract media URLs from attached items
+  // Extract media URLs from attached items. Prefer `url` when present —
+  // the appserver may populate progressive content URLs even while the
+  // asset is still finishing ingestion (wonder#45443). Items that still
+  // lack a url (metadata-only / not ready) are skipped rather than
+  // blocking the text path.
   if (Array.isArray(event.items) && event.items.length) {
     const mediaUrls: string[] = [];
     const mediaTypes: string[] = [];
@@ -272,6 +333,22 @@ async function handleRoamWebhookRequest(
         res.statusCode = 400;
         res.setHeader("Content-Type", "text/plain; charset=utf-8");
         res.end("invalid event payload");
+        return true;
+      }
+
+      // ACK edits/deletes without re-driving the agent. Still 200 so Roam
+      // does not retry; create-only dispatch keeps agent turns correct.
+      if (!shouldDispatchChatMessage(event)) {
+        const reason =
+          event.contentType === "deleted"
+            ? "delete"
+            : `edit version=${event.version ?? "?"}`;
+        target.runtime.log?.(
+          `roam webhook event: drop ${reason} chatId=${event.chatId} ts=${event.timestamp} (agent dispatches creates only)`,
+        );
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end("{}");
         return true;
       }
 
@@ -372,7 +449,11 @@ async function subscribeRoamWebhooks(params: {
   try {
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
-      throw new Error(`Roam webhook.subscribe failed: ${response.status} ${errorBody}`);
+      throw roamApiErrorFromResponse({
+        status: response.status,
+        body: errorBody,
+        action: "webhook.subscribe",
+      });
     }
   } finally {
     await release();
@@ -421,7 +502,13 @@ async function unsubscribeRoamWebhooks(params: {
   }
 }
 
-/** Fetch bot persona identity from token.info. Returns null on failure. */
+/**
+ * Fetch bot persona identity from token.info.
+ *
+ * Returns null on transient / non-auth failures (caller may retry).
+ * Throws `RoamApiError` with `isPermanentAuthFailure` for `token_revoked` /
+ * `invalid_token` so callers stop immediately instead of retrying a dead key.
+ */
 async function fetchRoamBotIdentity(
   apiKey: string,
   cfg?: CoreConfig,
@@ -439,6 +526,15 @@ async function fetchRoamBotIdentity(
     });
     try {
       if (!response.ok) {
+        const errorBody = await response.text().catch(() => "");
+        const err = roamApiErrorFromResponse({
+          status: response.status,
+          body: errorBody,
+          action: "token.info",
+        });
+        if (err.isPermanentAuthFailure) {
+          throw err;
+        }
         return null;
       }
       // PATs (rmp-) return both `user` (the human owner) and `bot` (the PAT's
@@ -463,7 +559,10 @@ async function fetchRoamBotIdentity(
     } finally {
       await release();
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof RoamApiError && err.isPermanentAuthFailure) {
+      throw err;
+    }
     return null;
   }
 }
@@ -511,18 +610,33 @@ export async function monitorRoamProvider(opts: RoamMonitorOptions): Promise<{ s
   // Fetch bot persona identity for self-message filtering and (for PATs)
   // owner-only enforcement. Retry briefly on transient failures so a single
   // network blip at startup doesn't degrade security for the lifetime of the
-  // process.
+  // process. Permanent auth failures (token_revoked / invalid_token) abort
+  // immediately — retrying a dead key never recovers.
   const accountApiBaseUrl = account.config.apiBaseUrl;
-  let botIdentity = await fetchRoamBotIdentity(account.apiKey, cfg, accountApiBaseUrl);
-  for (let attempt = 1; attempt <= 2 && !botIdentity; attempt++) {
-    // Skip the inter-attempt sleep under vitest so retry-path tests don't
-    // each cost ~3s of wall time. Production keeps the linear backoff.
-    const delayMs = process.env.NODE_ENV === "test" ? 0 : attempt * 1000;
-    logger.warn(
-      `[${account.accountId}] token.info attempt ${attempt} failed; retrying in ${delayMs}ms`,
-    );
-    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+  let botIdentity: RoamBotIdentity | null = null;
+  try {
     botIdentity = await fetchRoamBotIdentity(account.apiKey, cfg, accountApiBaseUrl);
+    for (let attempt = 1; attempt <= 2 && !botIdentity; attempt++) {
+      // Skip the inter-attempt sleep under vitest so retry-path tests don't
+      // each cost ~3s of wall time. Production keeps the linear backoff.
+      const delayMs = process.env.NODE_ENV === "test" ? 0 : attempt * 1000;
+      logger.warn(
+        `[${account.accountId}] token.info attempt ${attempt} failed; retrying in ${delayMs}ms`,
+      );
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+      botIdentity = await fetchRoamBotIdentity(account.apiKey, cfg, accountApiBaseUrl);
+    }
+  } catch (err) {
+    if (err instanceof RoamApiError && err.isPermanentAuthFailure) {
+      throw new Error(
+        `[${account.accountId}] Roam API key rejected (${err.code}) — refusing to start this account. ` +
+          (err.code === "token_revoked"
+            ? "The token is permanently unusable (owner archived/deleted or client revoked); discard it and create a new key."
+            : "The token is invalid or expired; check channels.roam.apiKey / ROAM_API_KEY and create a new key if needed."),
+        { cause: err },
+      );
+    }
+    throw err;
   }
   if (botIdentity) {
     account.botIdentity = botIdentity;
@@ -571,8 +685,9 @@ export async function monitorRoamProvider(opts: RoamMonitorOptions): Promise<{ s
 
   if (webhookUrl) {
     // Retry once on transient failure — webhook.subscribe is idempotent
-    // server-side, so a redundant retry is cheap. Manual fallback note still
-    // applies if both attempts fail.
+    // server-side, so a redundant retry is cheap. Permanent auth failures
+    // (token_revoked / invalid_token) skip the retry. Manual fallback note
+    // still applies if attempts fail for other reasons.
     let subscribed = false;
     let lastErr: unknown;
     for (let attempt = 0; attempt < 2 && !subscribed; attempt++) {
@@ -587,14 +702,21 @@ export async function monitorRoamProvider(opts: RoamMonitorOptions): Promise<{ s
         logger.info(`[${account.accountId}] Roam webhooks subscribed at ${webhookUrl}`);
       } catch (err) {
         lastErr = err;
+        if (err instanceof RoamApiError && err.isPermanentAuthFailure) {
+          break;
+        }
         if (attempt === 0 && process.env.NODE_ENV !== "test") {
           await new Promise((r) => setTimeout(r, 1000));
         }
       }
     }
     if (!subscribed) {
+      const permanent =
+        lastErr instanceof RoamApiError && lastErr.isPermanentAuthFailure
+          ? ` (${lastErr.code}; discard this API key — retrying will not help)`
+          : "";
       logger.warn(
-        `[${account.accountId}] Roam webhook subscription failed after retry: ${String(lastErr)}. Register webhooks manually in Roam admin.`,
+        `[${account.accountId}] Roam webhook subscription failed after retry: ${String(lastErr)}${permanent}. Register webhooks manually in Roam admin.`,
       );
     }
   } else {
