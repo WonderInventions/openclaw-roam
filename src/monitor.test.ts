@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   monitorRoamProvider,
   parseRoamWebhookEvent,
+  parseRoamWebhookVerification,
   shouldDispatchChatMessage,
   unwrapRoamWebhookEnvelope,
   verifyStandardWebhookSignature,
@@ -10,13 +11,22 @@ import {
 } from "./monitor.js";
 import type { CoreConfig, RoamWebhookEvent } from "./types.js";
 
-const { mockResolveRoamAccount, mockResolveLoggerBackedRuntime } = vi.hoisted(() => ({
+const {
+  mockResolveRoamAccount,
+  mockResolveLoggerBackedRuntime,
+  mockReadWebhookBodyOrReject,
+  mockWebhookPipeline,
+  webhookRegistration,
+} = vi.hoisted(() => ({
   mockResolveRoamAccount: vi.fn(),
   mockResolveLoggerBackedRuntime: vi.fn((_runtime: unknown, logger: unknown) => ({
     log: vi.fn(),
     error: vi.fn(),
     ...(logger as object),
   })),
+  mockReadWebhookBodyOrReject: vi.fn(),
+  mockWebhookPipeline: vi.fn(),
+  webhookRegistration: {} as { target?: unknown; handler?: (req: unknown, res: unknown) => Promise<void> },
 }));
 
 const mockLogger = {
@@ -54,8 +64,15 @@ vi.mock("./inbound.js", () => ({
 
 vi.mock("../runtime-api.js", () => ({
   createWebhookInFlightLimiter: () => ({ acquire: vi.fn(), release: vi.fn() }),
-  readWebhookBodyOrReject: vi.fn(),
-  registerWebhookTargetWithPluginRoute: () => ({ unregister: mockRegisterUnregister }),
+  readWebhookBodyOrReject: mockReadWebhookBodyOrReject,
+  registerWebhookTargetWithPluginRoute: (opts: {
+    target: unknown;
+    route: { handler: (req: unknown, res: unknown) => Promise<void> };
+  }) => {
+    webhookRegistration.target = opts.target;
+    webhookRegistration.handler = opts.route.handler;
+    return { unregister: mockRegisterUnregister };
+  },
   resolveWebhookPath: (opts: {
     webhookPath?: string;
     webhookUrl?: string;
@@ -73,7 +90,7 @@ vi.mock("../runtime-api.js", () => ({
     }
     return opts.defaultPath;
   },
-  withResolvedWebhookRequestPipeline: vi.fn(),
+  withResolvedWebhookRequestPipeline: mockWebhookPipeline,
 }));
 
 const mockFetchInner = vi.fn();
@@ -101,6 +118,8 @@ function defaultAccount(overrides?: Record<string, unknown>): Record<string, unk
 describe("monitorRoamProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    webhookRegistration.target = undefined;
+    webhookRegistration.handler = undefined;
     mockResolveRoamAccount.mockReturnValue(defaultAccount());
   });
 
@@ -125,6 +144,79 @@ describe("monitorRoamProvider", () => {
     expect(tokenInfoCall).toBeDefined();
     expect(tokenInfoCall![1].method).toBe("GET");
     expect(tokenInfoCall![1].headers.Authorization).toBe("Bearer test-api-key");
+  });
+
+  it("echoes a valid signed webhook verification before event parsing", async () => {
+    const secretBytes = Buffer.from("MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw", "base64");
+    const body = JSON.stringify({
+      type: "webhook.verification",
+      eventId: "evt-verify",
+      timestamp: "2026-07-20T12:00:00Z",
+      apiVersion: "2026-07-07",
+      data: { challenge: "challenge-token", event: "chat.message" },
+    });
+    const msgId = "msg_verify";
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = createHmac("sha256", secretBytes)
+      .update(`${msgId}.${timestamp}.${body}`)
+      .digest("base64");
+    mockFetchInner.mockResolvedValue({ ok: true, json: async () => ({}) });
+    mockReadWebhookBodyOrReject.mockResolvedValue({ ok: true, value: body });
+    mockWebhookPipeline.mockImplementation(
+      async (opts: { handle: (args: { targets: unknown[] }) => Promise<boolean> }) =>
+        await opts.handle({ targets: [webhookRegistration.target] }),
+    );
+
+    const { stop } = await monitorRoamProvider({});
+    const responseBody = vi.fn();
+    const res = {
+      statusCode: 0,
+      headersSent: false,
+      setHeader: vi.fn(),
+      end: responseBody,
+    };
+    await webhookRegistration.handler?.(
+      {
+        headers: {
+          "webhook-id": msgId,
+          "webhook-timestamp": timestamp,
+          "webhook-signature": `v1,${signature}`,
+        },
+      },
+      res,
+    );
+    stop();
+
+    expect(res.statusCode).toBe(200);
+    expect(responseBody).toHaveBeenCalledWith('{"challenge":"challenge-token"}');
+  });
+
+  it("rejects a verification with an invalid signature", async () => {
+    const body = '{"type":"webhook.verification","data":{"challenge":"token"}}';
+    mockFetchInner.mockResolvedValue({ ok: true, json: async () => ({}) });
+    mockReadWebhookBodyOrReject.mockResolvedValue({ ok: true, value: body });
+    mockWebhookPipeline.mockImplementation(
+      async (opts: { handle: (args: { targets: unknown[] }) => Promise<boolean> }) =>
+        await opts.handle({ targets: [webhookRegistration.target] }),
+    );
+
+    const { stop } = await monitorRoamProvider({});
+    const responseBody = vi.fn();
+    const res = { statusCode: 0, headersSent: false, setHeader: vi.fn(), end: responseBody };
+    await webhookRegistration.handler?.(
+      {
+        headers: {
+          "webhook-id": "msg_verify",
+          "webhook-timestamp": String(Math.floor(Date.now() / 1000)),
+          "webhook-signature": "v1,invalid",
+        },
+      },
+      res,
+    );
+    stop();
+
+    expect(res.statusCode).toBe(401);
+    expect(responseBody).toHaveBeenCalledWith("invalid webhook signature");
   });
 
   it("stores bot identity on account when token.info succeeds (org token shape)", async () => {
@@ -544,6 +636,25 @@ describe("unwrapRoamWebhookEnvelope / parseRoamWebhookEvent", () => {
     const parsed = parseRoamWebhookEvent(edit);
     expect(parsed).not.toBeNull();
     expect(shouldDispatchChatMessage(parsed!)).toBe(false);
+  });
+});
+
+describe("parseRoamWebhookVerification", () => {
+  it("returns the challenge from a verification envelope", () => {
+    expect(
+      parseRoamWebhookVerification({
+        type: "webhook.verification",
+        eventId: "evt-verify",
+        timestamp: "2026-07-20T12:00:00Z",
+        apiVersion: "2026-07-07",
+        data: { challenge: "challenge-token", event: "chat.message" },
+      }),
+    ).toBe("challenge-token");
+  });
+
+  it("rejects malformed and unrelated envelopes", () => {
+    expect(parseRoamWebhookVerification({ type: "chat.message", data: {} })).toBeNull();
+    expect(parseRoamWebhookVerification({ type: "webhook.verification", data: {} })).toBeNull();
   });
 });
 
