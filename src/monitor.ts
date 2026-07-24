@@ -205,6 +205,24 @@ export function parseRoamWebhookEvent(raw: unknown): RoamWebhookEvent | null {
   return obj as unknown as RoamWebhookEvent;
 }
 
+/** Return the challenge from a signed subscribe-time verification envelope. */
+export function parseRoamWebhookVerification(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+
+  const envelope = raw as Record<string, unknown>;
+  if (envelope.type !== "webhook.verification") {
+    return null;
+  }
+  const data = envelope.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return null;
+  }
+  const challenge = (data as Record<string, unknown>).challenge;
+  return typeof challenge === "string" ? challenge : null;
+}
+
 /**
  * Whether a parsed `chat.message` webhook should be dispatched to the agent.
  *
@@ -314,6 +332,16 @@ async function handleRoamWebhookRequest(
         res.statusCode = 400;
         res.setHeader("Content-Type", "text/plain; charset=utf-8");
         res.end("invalid JSON payload");
+        return true;
+      }
+
+      // Subscribe-time verification is signed like every other Roam webhook.
+      // Echo it synchronously before normal event parsing and agent dispatch.
+      const challenge = parseRoamWebhookVerification(parsed);
+      if (challenge !== null) {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(JSON.stringify({ challenge }));
         return true;
       }
 
